@@ -1,36 +1,39 @@
-import type { BillTable, HeaderTemplate } from "../types";
+import type { BillTable, HeaderTemplate, BillDetails } from "../types";
 
+// Your fixed business header - stays same for all bills
 export const initialHeader: HeaderTemplate = {
-  businessName: "JYOTI INTERIORS",
+  businessName: "DHARMENDRA VISHWAKARMA",
   address: "Sairaj Apt Sadguru Nagar Diva, Thane",
   phone: "9029537078",
-  gstNumber: ""
+  gstNumber: "",
+  tagline: "Specialist In All Interiors Works Plumbing, Painting, P.O.P, Fabricating And Civil Work"
 };
 
+// Default bill details - editable per bill
+export const initialBillDetails: BillDetails = {
+  date: new Date().toLocaleDateString('en-IN'),
+  clientName: "",
+  clientAddress: "",
+  subject: "Bill for Carpentry Work – Materials and Labour Charges",
+  advance: 0,
+  note: "GST 18% will be provided by the client.",
+  showSignature: true,
+  showNote: true,
+  proprietorName: "Mr. Dharmendra Vishwakarma"
+};
+
+// Default table structure for bills
 export const initialTables: BillTable[] = [
   {
-    id: "table-a",
-    title: "A",
+    id: "table-main",
+    title: "Bill Items",
     columns: [
-      { id: "sr", label: "Sr No", kind: "number" },
+      { id: "sr", label: "Sr. No", kind: "number" },
       { id: "particulars", label: "Particulars", kind: "text" },
-      { id: "qty", label: "Qty", kind: "number" },
-      { id: "rate", label: "Rate", kind: "number" },
       { id: "amount", label: "Amount", kind: "number" }
     ],
     rows: [
-      { id: "row-1", cells: { sr: "1", particulars: "Material bill", qty: "1", rate: "0", amount: "=qty*rate" } },
-      { id: "row-2", cells: { sr: "2", particulars: "Labour bill", qty: "1", rate: "0", amount: "=qty*rate" } }
+      { id: "row-1", cells: { sr: "1", particulars: "", amount: "0" } }
     ]
-  },
-  {
-    id: "table-b",
-    title: "Advance",
-    columns: [
-      { id: "date", label: "Date", kind: "text" },
-      { id: "name", label: "Name", kind: "text" },
-      { id: "amount", label: "Amount", kind: "number" }
-    ],
-    rows: [{ id: "row-3", cells: { date: "", name: "", amount: "0" } }]
   }
 ];

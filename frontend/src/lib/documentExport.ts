@@ -14,7 +14,7 @@ import {
 } from "docx";
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
-import type { BillTable, HeaderTemplate } from "../types";
+import type { BillTable, HeaderTemplate, BillDetails } from "../types";
 
 // ============================================
 // PDF Export
@@ -456,3 +456,387 @@ Rules:
 3. Include GST/tax if shown
 4. Return ONLY valid JSON, no other text
 5. Use numbers (not strings) for numeric values`;
+
+
+// ============================================
+// Professional Bill Export (Dharmendra Format)
+// ============================================
+
+const formatIndianCurrency = (amount: number): string => {
+  return `₹ ${amount.toLocaleString('en-IN')}`;
+};
+
+export async function exportProfessionalPDF(
+  header: HeaderTemplate,
+  tables: BillTable[],
+  billDetails: BillDetails,
+  filename: string = "bill"
+): Promise<void> {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 20;
+  let yPos = 15;
+
+  // Calculate total
+  const mainTable = tables[0];
+  const total = mainTable?.rows.reduce((sum, row) => {
+    return sum + (parseFloat(row.cells.amount) || 0);
+  }, 0) || 0;
+  const balance = total - billDetails.advance;
+
+  // Top line
+  doc.setDrawColor(0);
+  doc.setLineWidth(0.5);
+  doc.line(margin, yPos, pageWidth - margin, yPos);
+  yPos += 8;
+
+  // Business Name
+  doc.setFontSize(22);
+  doc.setFont("helvetica", "bold");
+  doc.text(header.businessName, pageWidth / 2, yPos, { align: "center" });
+  yPos += 7;
+
+  // Phone
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "normal");
+  doc.text(`Mobile No. ${header.phone}`, pageWidth / 2, yPos, { align: "center" });
+  yPos += 5;
+
+  // Address
+  doc.text(header.address, pageWidth / 2, yPos, { align: "center" });
+  yPos += 5;
+
+  // Bottom line
+  doc.line(margin, yPos, pageWidth - margin, yPos);
+  yPos += 5;
+
+  // Tagline
+  if (header.tagline) {
+    doc.setFontSize(10);
+    doc.text(header.tagline, pageWidth / 2, yPos, { align: "center", maxWidth: pageWidth - 40 });
+    yPos += 10;
+  }
+
+  // Date - Right aligned
+  yPos += 5;
+  doc.setFontSize(11);
+  doc.text(`Date: ${billDetails.date}`, pageWidth - margin, yPos, { align: "right" });
+  yPos += 10;
+
+  // Client Details
+  doc.setFont("helvetica", "normal");
+  doc.text("To,", margin, yPos);
+  yPos += 6;
+  doc.setFont("helvetica", "bold");
+  doc.text(billDetails.clientName || "________________", margin, yPos);
+  yPos += 6;
+  doc.setFont("helvetica", "normal");
+  doc.text(billDetails.clientAddress || "________________", margin, yPos);
+  yPos += 12;
+
+  // Subject
+  doc.setFont("helvetica", "normal");
+  doc.text(`Sub: ${billDetails.subject}`, margin, yPos, { maxWidth: pageWidth - 40 });
+  yPos += 12;
+
+  // Table
+  const colWidths = [25, pageWidth - 2 * margin - 60, 35];
+  const tableStartY = yPos;
+  
+  // Table header
+  doc.setFillColor(245, 245, 245);
+  doc.rect(margin, yPos - 4, pageWidth - 2 * margin, 8, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  
+  doc.text("Sr. No", margin + 2, yPos);
+  doc.text("Particulars", margin + colWidths[0] + 2, yPos);
+  doc.text("Amount", margin + colWidths[0] + colWidths[1] + 2, yPos);
+  
+  // Table lines
+  doc.setDrawColor(0);
+  doc.line(margin, yPos - 4, pageWidth - margin, yPos - 4);
+  doc.line(margin, yPos + 4, pageWidth - margin, yPos + 4);
+  
+  yPos += 10;
+
+  // Table rows
+  doc.setFont("helvetica", "normal");
+  mainTable?.rows.forEach((row, index) => {
+    const particulars = row.cells.particulars || "";
+    const amount = parseFloat(row.cells.amount) || 0;
+    
+    // Handle multi-line particulars
+    const lines = doc.splitTextToSize(particulars, colWidths[1] - 4);
+    const rowHeight = Math.max(lines.length * 5, 8);
+    
+    doc.text(String(row.cells.sr || index + 1), margin + 2, yPos);
+    doc.text(lines, margin + colWidths[0] + 2, yPos);
+    doc.text(formatIndianCurrency(amount), margin + colWidths[0] + colWidths[1] + 2, yPos);
+    
+    yPos += rowHeight + 2;
+  });
+
+  // Totals
+  doc.setFont("helvetica", "bold");
+  doc.line(margin, yPos, pageWidth - margin, yPos);
+  yPos += 6;
+  
+  doc.text("Total", margin + colWidths[0] + colWidths[1] - 20, yPos);
+  doc.text(formatIndianCurrency(total), margin + colWidths[0] + colWidths[1] + 2, yPos);
+  yPos += 6;
+  
+  doc.text("Advance", margin + colWidths[0] + colWidths[1] - 20, yPos);
+  doc.text(formatIndianCurrency(billDetails.advance), margin + colWidths[0] + colWidths[1] + 2, yPos);
+  yPos += 6;
+  
+  doc.text("Balance", margin + colWidths[0] + colWidths[1] - 20, yPos);
+  doc.text(formatIndianCurrency(balance), margin + colWidths[0] + colWidths[1] + 2, yPos);
+  
+  doc.line(margin, yPos + 4, pageWidth - margin, yPos + 4);
+  yPos += 20;
+
+  // Note
+  if (billDetails.showNote && billDetails.note) {
+    doc.setFont("helvetica", "bold");
+    doc.text("Note.", margin, yPos);
+    yPos += 5;
+    doc.setFont("helvetica", "normal");
+    doc.text(billDetails.note, margin, yPos, { maxWidth: pageWidth - 40 });
+    yPos += 15;
+  }
+
+  // Signature
+  if (billDetails.showSignature) {
+    yPos = Math.max(yPos, 240); // Push signature to bottom
+    doc.setFont("helvetica", "normal");
+    doc.text(`Proprietor: ${billDetails.proprietorName}`, pageWidth - margin - 60, yPos, { align: "center" });
+    yPos += 15;
+    doc.text("Authorised Signatory", pageWidth - margin - 60, yPos, { align: "center" });
+  }
+
+  doc.save(`${filename}.pdf`);
+}
+
+export async function exportProfessionalExcel(
+  header: HeaderTemplate,
+  tables: BillTable[],
+  billDetails: BillDetails,
+  filename: string = "bill"
+): Promise<void> {
+  const wb = XLSX.utils.book_new();
+  const wsData: (string | number)[][] = [];
+
+  const mainTable = tables[0];
+  const total = mainTable?.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0) || 0;
+  const balance = total - billDetails.advance;
+
+  // Header
+  wsData.push([header.businessName]);
+  wsData.push([`Mobile No. ${header.phone}`]);
+  wsData.push([header.address]);
+  if (header.tagline) wsData.push([header.tagline]);
+  wsData.push([]);
+  wsData.push([`Date: ${billDetails.date}`]);
+  wsData.push([]);
+  wsData.push(["To,"]);
+  wsData.push([billDetails.clientName]);
+  wsData.push([billDetails.clientAddress]);
+  wsData.push([]);
+  wsData.push([`Sub: ${billDetails.subject}`]);
+  wsData.push([]);
+
+  // Table header
+  wsData.push(["Sr. No", "Particulars", "Amount"]);
+
+  // Table rows
+  mainTable?.rows.forEach((row, index) => {
+    wsData.push([
+      row.cells.sr || String(index + 1),
+      row.cells.particulars || "",
+      parseFloat(row.cells.amount) || 0
+    ]);
+  });
+
+  // Totals
+  wsData.push(["", "Total", total]);
+  wsData.push(["", "Advance", billDetails.advance]);
+  wsData.push(["", "Balance", balance]);
+  wsData.push([]);
+
+  // Note
+  if (billDetails.showNote && billDetails.note) {
+    wsData.push(["Note."]);
+    wsData.push([billDetails.note]);
+    wsData.push([]);
+  }
+
+  // Signature
+  if (billDetails.showSignature) {
+    wsData.push([`Proprietor: ${billDetails.proprietorName}`]);
+    wsData.push(["Authorised Signatory"]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = [{ wch: 10 }, { wch: 60 }, { wch: 15 }];
+  
+  XLSX.utils.book_append_sheet(wb, ws, "Bill");
+  XLSX.writeFile(wb, `${filename}.xlsx`);
+}
+
+export async function exportProfessionalWord(
+  header: HeaderTemplate,
+  tables: BillTable[],
+  billDetails: BillDetails,
+  filename: string = "bill"
+): Promise<void> {
+  const mainTable = tables[0];
+  const total = mainTable?.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0) || 0;
+  const balance = total - billDetails.advance;
+
+  const children: (Paragraph | Table)[] = [];
+
+  // Header
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: header.businessName, bold: true, size: 40 })],
+      alignment: AlignmentType.CENTER,
+      border: { top: { style: BorderStyle.SINGLE, size: 6 }, bottom: { style: BorderStyle.SINGLE, size: 6 } },
+      spacing: { after: 100 }
+    })
+  );
+
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: `Mobile No. ${header.phone}`, size: 22 })],
+      alignment: AlignmentType.CENTER
+    })
+  );
+
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: header.address, size: 22 })],
+      alignment: AlignmentType.CENTER
+    })
+  );
+
+  if (header.tagline) {
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: header.tagline, size: 20, italics: true })],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 200 }
+      })
+    );
+  }
+
+  // Date
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: `Date: ${billDetails.date}`, size: 22 })],
+      alignment: AlignmentType.RIGHT,
+      spacing: { before: 200 }
+    })
+  );
+
+  // Client
+  children.push(new Paragraph({ children: [new TextRun({ text: "To,", size: 22 })], spacing: { before: 200 } }));
+  children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientName, bold: true, size: 22 })] }));
+  children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientAddress, size: 22 })], spacing: { after: 200 } }));
+
+  // Subject
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: `Sub: ${billDetails.subject}`, size: 22 })],
+      spacing: { after: 200 }
+    })
+  );
+
+  // Table
+  const tableRows: TableRow[] = [];
+
+  // Header row
+  tableRows.push(
+    new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Sr. No", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Particulars", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 70, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 20, type: WidthType.PERCENTAGE } })
+      ]
+    })
+  );
+
+  // Data rows
+  mainTable?.rows.forEach((row, index) => {
+    tableRows.push(
+      new TableRow({
+        children: [
+          new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] }),
+          new TableCell({ children: [new Paragraph({ text: row.cells.particulars || "" })] }),
+          new TableCell({ children: [new Paragraph({ text: formatIndianCurrency(parseFloat(row.cells.amount) || 0), alignment: AlignmentType.RIGHT })] })
+        ]
+      })
+    );
+  });
+
+  // Total rows
+  tableRows.push(
+    new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Total", bold: true })], alignment: AlignmentType.RIGHT })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatIndianCurrency(total), bold: true })], alignment: AlignmentType.RIGHT })] })
+      ]
+    })
+  );
+
+  tableRows.push(
+    new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Advance", bold: true })], alignment: AlignmentType.RIGHT })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatIndianCurrency(billDetails.advance), bold: true })], alignment: AlignmentType.RIGHT })] })
+      ]
+    })
+  );
+
+  tableRows.push(
+    new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Balance", bold: true })], alignment: AlignmentType.RIGHT })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatIndianCurrency(balance), bold: true })], alignment: AlignmentType.RIGHT })] })
+      ]
+    })
+  );
+
+  children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+
+  // Note
+  if (billDetails.showNote && billDetails.note) {
+    children.push(new Paragraph({ children: [new TextRun({ text: "Note.", bold: true, size: 22 })], spacing: { before: 400 } }));
+    children.push(new Paragraph({ children: [new TextRun({ text: billDetails.note, size: 22 })] }));
+  }
+
+  // Signature
+  if (billDetails.showSignature) {
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: `Proprietor: ${billDetails.proprietorName}`, size: 22 })],
+        alignment: AlignmentType.RIGHT,
+        spacing: { before: 600 }
+      })
+    );
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: "Authorised Signatory", size: 22 })],
+        alignment: AlignmentType.RIGHT,
+        spacing: { before: 200 }
+      })
+    );
+  }
+
+  const doc = new Document({ sections: [{ children }] });
+  const blob = await Packer.toBlob(doc);
+  saveAs(blob, `${filename}.docx`);
+}

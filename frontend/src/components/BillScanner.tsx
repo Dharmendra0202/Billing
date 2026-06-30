@@ -5,12 +5,16 @@ import {
   exportToPDF,
   exportToExcel,
   exportToWord,
+  exportProfessionalPDF,
+  exportProfessionalExcel,
+  exportProfessionalWord,
   parseBillDataFromAI,
   convertExtractedDataToTables,
   type ExtractedBillData
 } from "../lib/documentExport";
 import { convertBillMeasurements, getConversionTableText } from "../lib/inchConversion";
-import type { BillTable, HeaderTemplate } from "../types";
+import type { BillTable, HeaderTemplate, BillDetails } from "../types";
+import { initialBillDetails } from "../data/initialBill";
 
 type Props = {
   header: HeaderTemplate;
@@ -27,6 +31,8 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
   const [rawResponse, setRawResponse] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
   const [applyInchConversion, setApplyInchConversion] = useState(true);
+  const [billDetails, setBillDetails] = useState<BillDetails>(initialBillDetails);
+  const [useProfessionalFormat, setUseProfessionalFormat] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,7 +118,9 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
   const handleExportPDF = async () => {
     setIsExporting(true);
     try {
-      if (extractedData) {
+      if (useProfessionalFormat) {
+        await exportProfessionalPDF(header, tables, billDetails, "bill");
+      } else if (extractedData) {
         const { header: h, tables: t } = convertExtractedDataToTables(extractedData);
         const fullHeader: HeaderTemplate = { ...header, ...h } as HeaderTemplate;
         await exportToPDF(fullHeader, t, "scanned-bill");
@@ -129,7 +137,9 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
   const handleExportExcel = async () => {
     setIsExporting(true);
     try {
-      if (extractedData) {
+      if (useProfessionalFormat) {
+        await exportProfessionalExcel(header, tables, billDetails, "bill");
+      } else if (extractedData) {
         const { header: h, tables: t } = convertExtractedDataToTables(extractedData);
         const fullHeader: HeaderTemplate = { ...header, ...h } as HeaderTemplate;
         await exportToExcel(fullHeader, t, "scanned-bill");
@@ -146,7 +156,9 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
   const handleExportWord = async () => {
     setIsExporting(true);
     try {
-      if (extractedData) {
+      if (useProfessionalFormat) {
+        await exportProfessionalWord(header, tables, billDetails, "bill");
+      } else if (extractedData) {
         const { header: h, tables: t } = convertExtractedDataToTables(extractedData);
         const fullHeader: HeaderTemplate = { ...header, ...h } as HeaderTemplate;
         await exportToWord(fullHeader, t, "scanned-bill");
@@ -379,13 +391,100 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
           </details>
         )}
 
-        {/* Step 4: Export */}
+        {/* Step 4: Bill Details (for Professional Format) */}
+        <div className="scannerSection billDetailsSection">
+          <h4>📝 Bill Details</h4>
+          
+          <label className="toggleOption" style={{ marginBottom: "12px" }}>
+            <input
+              type="checkbox"
+              checked={useProfessionalFormat}
+              onChange={(e) => setUseProfessionalFormat(e.target.checked)}
+            />
+            <span>Use Professional Format (Dharmendra Style)</span>
+          </label>
+
+          {useProfessionalFormat && (
+            <div className="billDetailsForm">
+              <div className="detailsRow">
+                <label>
+                  Date
+                  <input
+                    type="text"
+                    value={billDetails.date}
+                    onChange={(e) => setBillDetails({...billDetails, date: e.target.value})}
+                    placeholder="DD/MM/YYYY"
+                  />
+                </label>
+                <label>
+                  Client Name
+                  <input
+                    type="text"
+                    value={billDetails.clientName}
+                    onChange={(e) => setBillDetails({...billDetails, clientName: e.target.value})}
+                    placeholder="e.g., Atharv Palace"
+                  />
+                </label>
+              </div>
+              <div className="detailsRow">
+                <label>
+                  Client Address
+                  <input
+                    type="text"
+                    value={billDetails.clientAddress}
+                    onChange={(e) => setBillDetails({...billDetails, clientAddress: e.target.value})}
+                    placeholder="e.g., Vile Parle East"
+                  />
+                </label>
+                <label>
+                  Advance (₹)
+                  <input
+                    type="number"
+                    value={billDetails.advance}
+                    onChange={(e) => setBillDetails({...billDetails, advance: parseFloat(e.target.value) || 0})}
+                  />
+                </label>
+              </div>
+              <label>
+                Subject
+                <input
+                  type="text"
+                  value={billDetails.subject}
+                  onChange={(e) => setBillDetails({...billDetails, subject: e.target.value})}
+                  placeholder="Bill for Carpentry Work..."
+                />
+              </label>
+              <div className="optionTogglesRow">
+                <label className="toggleOption">
+                  <input
+                    type="checkbox"
+                    checked={billDetails.showNote}
+                    onChange={(e) => setBillDetails({...billDetails, showNote: e.target.checked})}
+                  />
+                  <span>Show Note</span>
+                </label>
+                <label className="toggleOption">
+                  <input
+                    type="checkbox"
+                    checked={billDetails.showSignature}
+                    onChange={(e) => setBillDetails({...billDetails, showSignature: e.target.checked})}
+                  />
+                  <span>Show Signature</span>
+                </label>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Step 5: Export */}
         <div className="scannerSection exportSection">
-          <h4>4️⃣ Export Document</h4>
+          <h4>5️⃣ Export Document</h4>
           <p className="exportNote">
-            {extractedData 
-              ? "Export the scanned data above, or load into editor first to make more changes."
-              : "Export your current bill from the editor."}
+            {useProfessionalFormat 
+              ? "Export in your professional bill format (PDF/Excel/Word)"
+              : extractedData 
+                ? "Export the scanned data above"
+                : "Export your current bill from the editor"}
           </p>
           
           <div className="exportButtons">

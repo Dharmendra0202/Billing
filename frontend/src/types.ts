@@ -4,6 +4,7 @@ export type HeaderTemplate = {
   phone: string;
   gstNumber: string;
   logoUrl?: string;
+  tagline?: string; // "Specialist In All Interiors Works..."
 };
 
 export type BillColumn = {
@@ -22,4 +23,17 @@ export type BillTable = {
   title: string;
   columns: BillColumn[];
   rows: BillRow[];
+};
+
+// Bill details that change per bill
+export type BillDetails = {
+  date: string;
+  clientName: string;
+  clientAddress: string;
+  subject: string;
+  advance: number;
+  note: string;
+  showSignature: boolean;
+  showNote: boolean;
+  proprietorName: string;
 };
