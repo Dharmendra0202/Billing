@@ -1,4 +1,4 @@
-import { Camera, FileSpreadsheet, FileText, FileType, Loader2, ScanLine, Upload, Check, Edit3 } from "lucide-react";
+import { Camera, FileSpreadsheet, FileText, FileType, Loader2, ScanLine, Upload, Check, Edit3, Ruler } from "lucide-react";
 import { useState, useRef } from "react";
 import { AIService } from "../lib/aiService";
 import {
@@ -9,6 +9,7 @@ import {
   convertExtractedDataToTables,
   type ExtractedBillData
 } from "../lib/documentExport";
+import { convertBillMeasurements, getConversionTableText } from "../lib/inchConversion";
 import type { BillTable, HeaderTemplate } from "../types";
 
 type Props = {
@@ -25,6 +26,7 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
   const [extractedData, setExtractedData] = useState<ExtractedBillData | null>(null);
   const [rawResponse, setRawResponse] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
+  const [applyInchConversion, setApplyInchConversion] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -73,8 +75,12 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
 
       const data = parseBillDataFromAI(response);
       if (data && data.items && data.items.length > 0) {
-        setExtractedData(data);
-        setStatus(`✅ Extracted ${data.items.length} items! You can now edit or export.`);
+        // Apply inch conversion if enabled
+        const processedData = applyInchConversion 
+          ? convertBillMeasurements(data) as ExtractedBillData
+          : data;
+        setExtractedData(processedData);
+        setStatus(`✅ Extracted ${data.items.length} items${applyInchConversion ? ' (inch converted)' : ''}! You can now edit or export.`);
       } else {
         setStatus("⚠️ Could not parse structured data. Check the raw response below.");
       }
@@ -210,6 +216,23 @@ export function BillScanner({ header, tables, onUpdate }: Props) {
         {/* Step 2: Scan */}
         <div className="scannerSection">
           <h4>2️⃣ Scan with AI</h4>
+          
+          {/* Inch Conversion Toggle */}
+          <div className="inchConversionToggle">
+            <label className="toggleLabel">
+              <input 
+                type="checkbox" 
+                checked={applyInchConversion} 
+                onChange={(e) => setApplyInchConversion(e.target.checked)}
+              />
+              <Ruler size={16} />
+              <span>Apply Inch Conversion</span>
+            </label>
+            <small className="conversionHint">
+              {getConversionTableText()}
+            </small>
+          </div>
+
           <button 
             className="scanBtn" 
             onClick={scanBill} 
