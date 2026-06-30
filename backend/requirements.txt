@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn==0.32.1
+python-multipart==0.0.20
+openpyxl
+xlsxwriter
+pandas
+openai
+anthropic
+
+# Add these when you are ready for real OCR:
+# paddleocr
+# opencv-python
+# pillow

@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+backend/.venv/
+
+# Build outputs
+dist/
+dist-electron/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Cache
+.cache/
+__pycache__/
+*.pyc

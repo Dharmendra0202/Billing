@@ -1,0 +1,41 @@
+{
+  "name": "bill-ai-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop bill generator with reusable headers, dynamic tables, formulas, and OCR-ready backend.",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "build": "tsc && vite build && tsc -p electron/tsconfig.json",
+    "preview": "vite preview --host 127.0.0.1",
+    "backend": "python backend/main.py",
+    "backend:venv": "backend\\.venv\\Scripts\\python backend/main.py"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.107.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "dotenv": "^17.4.2",
+    "electron": "^39.2.6",
+    "exceljs": "^4.4.0",
+    "hyperformula": "^3.3.0",
+    "lucide-react": "^0.468.0",
+    "openai": "^6.45.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tesseract.js": "^7.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4",
+    "vite-plugin-env-compatible": "^2.0.1",
+    "wait-on": "^9.0.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3"
+  }
+}
