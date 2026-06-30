@@ -1043,3 +1043,368 @@ select:focus {
   font-size: 12px;
   margin: 0;
 }
+
+
+/* Bill Scanner Styles */
+.billScannerToggle {
+  position: fixed;
+  bottom: 24px;
+  right: 100px;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.4);
+  z-index: 1000;
+  transition: all 0.2s;
+}
+
+.billScannerToggle:hover {
+  transform: scale(1.05);
+  box-shadow: 0 12px 32px rgba(16, 185, 129, 0.5);
+}
+
+.billScannerPanel {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 48px rgba(30, 38, 52, 0.22);
+  z-index: 1001;
+  overflow: hidden;
+}
+
+.scannerHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  padding: 16px 18px;
+  flex-shrink: 0;
+}
+
+.scannerHeader h3 {
+  font-size: 18px;
+  margin-bottom: 2px;
+}
+
+.scannerHeader small {
+  display: block;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+}
+
+.scannerHeader .closeBtn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scannerHeader .closeBtn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.scannerContent {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.scannerSection {
+  border: 1px solid #e4e9f0;
+  border-radius: 10px;
+  padding: 14px;
+  background: #fafbfc;
+}
+
+.scannerSection h4 {
+  font-size: 14px;
+  color: #1e2633;
+  margin: 0 0 12px 0;
+}
+
+.scannerSection .uploadDropzone {
+  min-height: 120px;
+  font-size: 14px;
+}
+
+.scannerSection .uploadDropzone small {
+  font-weight: 400;
+  color: #8b95a5;
+}
+
+.imagePreviewBox {
+  text-align: center;
+}
+
+.imagePreviewBox img {
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 2px solid #10b981;
+  margin-bottom: 10px;
+}
+
+.imagePreviewBox .changeBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #cfd7e2;
+  border-radius: 6px;
+  background: #fff;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #4c596b;
+}
+
+.scanBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.scanBtn:disabled {
+  background: #cbd5e1;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.statusText {
+  margin: 10px 0 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.extractedData {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+.dataPreview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dataRow {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.dataRow strong {
+  font-size: 12px;
+  color: #4c596b;
+}
+
+.dataRow input {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+.itemsTable {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.itemsTable th,
+.itemsTable td {
+  border: 1px solid #d1d5db;
+  padding: 6px 8px;
+}
+
+.itemsTable th {
+  background: #e5e7eb;
+  font-weight: 600;
+  text-align: left;
+}
+
+.itemsTable input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.itemsTable input[type="number"] {
+  width: 70px;
+  text-align: right;
+}
+
+.itemsTable tfoot td {
+  background: #d1fae5;
+  font-weight: 600;
+}
+
+.loadEditorBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px;
+  border: 2px solid #10b981;
+  border-radius: 8px;
+  background: #fff;
+  color: #059669;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 10px;
+}
+
+.loadEditorBtn:hover {
+  background: #ecfdf5;
+}
+
+.rawResponseBox {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.rawResponseBox summary {
+  cursor: pointer;
+  color: #6b7280;
+  padding: 6px 0;
+}
+
+.rawResponseBox pre {
+  background: #1f2937;
+  color: #e5e7eb;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 11px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.exportSection {
+  background: #f8fafc;
+}
+
+.exportNote {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 0 0 12px 0;
+}
+
+.exportButtons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.exportBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px;
+  border: 2px solid;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.exportBtn.pdf {
+  border-color: #ef4444;
+  color: #dc2626;
+}
+
+.exportBtn.pdf:hover {
+  background: #fef2f2;
+}
+
+.exportBtn.excel {
+  border-color: #22c55e;
+  color: #16a34a;
+}
+
+.exportBtn.excel:hover {
+  background: #f0fdf4;
+}
+
+.exportBtn.word {
+  border-color: #3b82f6;
+  color: #2563eb;
+}
+
+.exportBtn.word:hover {
+  background: #eff6ff;
+}
+
+.exportBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .billScannerPanel {
+    width: calc(100vw - 32px);
+    bottom: 16px;
+    right: 16px;
+  }
+
+  .billScannerToggle {
+    bottom: 16px;
+    right: 90px;
+  }
+
+  .exportButtons {
+    grid-template-columns: 1fr;
+  }
+}

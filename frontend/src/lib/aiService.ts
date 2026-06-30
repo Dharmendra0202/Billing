@@ -276,4 +276,38 @@ Be helpful, concise, and accurate. Always explain what changes you're making.`;
       reader.readAsDataURL(file);
     });
   }
+
+  // Extract structured bill data from image
+  async extractBillFromImage(imageBase64: string): Promise<string> {
+    const extractionPrompt = `Analyze this bill/invoice image and extract all data in this exact JSON format:
+
+{
+  "businessName": "Store/Business name",
+  "address": "Full address if visible",
+  "phone": "Phone number if visible",
+  "gstNumber": "GST/Tax number if visible",
+  "items": [
+    {
+      "name": "Item name",
+      "quantity": 1,
+      "unit": "kg/pcs/etc",
+      "rate": 100,
+      "amount": 100
+    }
+  ],
+  "subtotal": 1000,
+  "gst": 180,
+  "discount": 0,
+  "grandTotal": 1180
+}
+
+Rules:
+1. Extract ALL items you can see
+2. If quantity/rate not visible, estimate from amount
+3. Include GST/tax if shown
+4. Return ONLY valid JSON, no other text
+5. Use numbers (not strings) for numeric values`;
+
+    return this.analyzeImage(imageBase64, extractionPrompt);
+  }
 }

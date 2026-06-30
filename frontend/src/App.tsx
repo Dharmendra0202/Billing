@@ -3,6 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import Tesseract from "tesseract.js";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
+import { BillScanner } from "./components/BillScanner";
 import { BillTableEditor } from "./components/BillTableEditor";
 import { HeaderEditor } from "./components/HeaderEditor";
 import { initialHeader, initialTables } from "./data/initialBill";
@@ -364,6 +365,7 @@ export function App() {
       </section>
 
       <AIChat header={header} tables={tables} onUpdate={handleAIUpdate} />
+      <BillScanner header={header} tables={tables} onUpdate={handleAIUpdate} />
     </main>
   );
 }
