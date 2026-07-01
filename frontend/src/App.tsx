@@ -5,8 +5,9 @@ import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
 import { initialBillDetails, initialHeader, initialTables } from "./data/initialBill";
-import { grandTotal, makeId, money } from "./lib/billMath";
+import { money } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
+import { convertAllPointValues } from "./lib/inchConversion";
 import type { BillDetails, BillTable, HeaderTemplate } from "./types";
 
 // Convert editor rows → BillTable for export (all 5 columns)
@@ -48,10 +49,23 @@ function recalc(rows: EditorRow[]): EditorRow[] {
 
 function parseSize(size: string): number {
   const clean = size.trim();
-  if (!clean) return 1; // empty size = 1 (so amount = rate directly)
-  const parts = clean.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
-  if (parts.length >= 2) return parts.reduce((a, b) => a * b, 1);
-  return parseFloat(clean) || 1;
+  if (!clean) return 1; // empty = 1 so amount = rate directly
+
+  // Split on x / * / × to get individual dimension parts
+  const rawParts = clean.split(/[x*×]/i).map(p => p.trim()).filter(Boolean);
+
+  if (rawParts.length >= 2) {
+    // Convert each part through the inch chart, then multiply
+    const converted = rawParts.map(part => {
+      const c = convertAllPointValues(part);
+      return parseFloat(c) || 0;
+    });
+    return Math.round(converted.reduce((a, b) => a * b, 1) * 10000) / 10000;
+  }
+
+  // Single value — convert then parse
+  const converted = convertAllPointValues(clean);
+  return parseFloat(converted) || 1;
 }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
@@ -283,6 +297,17 @@ export function App() {
                         onChange={e => updateRow(row.id, "size", e.target.value)}
                         placeholder="e.g. 3x4 or 12"
                       />
+                      {row.size.trim() && (() => {
+                        const converted = convertAllPointValues(row.size);
+                        const parsed = parseSize(row.size);
+                        const changed = converted !== row.size;
+                        return (
+                          <small className="sizeHint">
+                            {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
+                            {row.size.match(/[x*×]/i) && <span>= {parsed}</span>}
+                          </small>
+                        );
+                      })()}
                     </td>
                     <td className="tdRight">
                       <input

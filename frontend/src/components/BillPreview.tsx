@@ -1,5 +1,6 @@
 import type { BillDetails, HeaderTemplate } from "../types";
 import { money } from "../lib/billMath";
+import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
 
 type Row = {
   id: string;
@@ -16,14 +17,35 @@ type Props = {
   billDetails: BillDetails;
 };
 
-function parseSizeDisplay(size: string): string {
-  if (!size.trim()) return "";
-  const parts = size.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
-  if (parts.length >= 2) {
-    const result = parts.reduce((a, b) => a * b, 1);
-    return `${size} = ${result}`;
+// Convert each part of a size expression and return both original + converted display
+function convertSizeDisplay(size: string): { original: string; converted: string; value: number } {
+  const clean = size.trim();
+  if (!clean) return { original: "", converted: "", value: 1 };
+
+  const rawParts = clean.split(/[x*×]/i).map(p => p.trim()).filter(Boolean);
+
+  if (rawParts.length >= 2) {
+    const convertedParts = rawParts.map(p => convertAllPointValues(p));
+    const values = convertedParts.map(p => parseFloat(p) || 0);
+    const result = Math.round(values.reduce((a, b) => a * b, 1) * 10000) / 10000;
+    const convertedStr = convertedParts.join(" × ");
+    const originalStr = rawParts.join(" × ");
+    // Only show converted if it actually changed
+    const changed = convertedStr !== originalStr;
+    return { original: originalStr, converted: changed ? convertedStr : "", value: result };
   }
-  return size;
+
+  const converted = convertAllPointValues(clean);
+  const changed = converted !== clean;
+  return { original: clean, converted: changed ? converted : "", value: parseFloat(converted) || 1 };
+}
+
+// Check if a size string contains any convertible point values
+function hasConvertiblePoints(size: string): boolean {
+  return Object.keys(INCH_CONVERSION_MAP).some(point => {
+    const escaped = point.replace('.', '\\.');
+    return new RegExp(`\\d${escaped}(?!\\d)`).test(size);
+  });
 }
 
 export function BillPreview({ header, rows, billDetails }: Props) {
@@ -85,16 +107,20 @@ export function BillPreview({ header, rows, billDetails }: Props) {
                 {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
               </td>
               <td className="pbSizeCell">
-                {row.size ? (
-                  <>
-                    <span className="pbSizeRaw">{row.size}</span>
-                    {row.size.match(/[x*×]/i) && (
-                      <span className="pbSizeCalc">
-                        {" = "}{row.size.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n)).reduce((a, b) => a * b, 1)}
-                      </span>
-                    )}
-                  </>
-                ) : <span style={{ color: "#bbb" }}>—</span>}
+                {row.size ? (() => {
+                  const { original, converted, value } = convertSizeDisplay(row.size);
+                  return (
+                    <>
+                      <span className="pbSizeRaw">{original}</span>
+                      {converted && (
+                        <span className="pbSizeConverted">→ {converted}</span>
+                      )}
+                      {row.size.match(/[x*×]/i) && (
+                        <span className="pbSizeCalc">= {value}</span>
+                      )}
+                    </>
+                  );
+                })() : <span style={{ color: "#bbb" }}>—</span>}
               </td>
               <td className="pbRateCell">{row.rate > 0 ? money(row.rate) : "—"}</td>
               <td className="pbAmtCell">{row.amount > 0 ? money(row.amount) : "—"}</td>
