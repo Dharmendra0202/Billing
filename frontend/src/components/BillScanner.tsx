@@ -48,9 +48,11 @@ function renumber(rows: ScannedRow[]): ScannedRow[] {
 type Props = {
   header: HeaderTemplate;
   onHeaderChange: (h: HeaderTemplate) => void;
+  /** When provided, the scanner is controlled externally (modal mode). */
+  onClose?: () => void;
 };
 
-export function BillScanner({ header, onHeaderChange }: Props) {
+export function BillScanner({ header, onHeaderChange, onClose }: Props) {
   const [isOpen, setIsOpen]       = useState(false);
   const [activeTab, setActiveTab] = useState<"scanner" | "ai">("scanner");
 
@@ -285,8 +287,13 @@ export function BillScanner({ header, onHeaderChange }: Props) {
     setIsExporting(false);
   };
 
+  // controlled (modal) mode: always render panel, close via onClose
+  const handleClose = () => {
+    if (onClose) { onClose(); } else { setIsOpen(false); }
+  };
+
   // ── toggle button ─────────────────────────────────────────────────────────────
-  if (!isOpen) return (
+  if (!onClose && !isOpen) return (
     <button className="billScannerToggle" onClick={() => setIsOpen(true)} title="Bill Scanner & AI">
       <ScanLine size={24} />
     </button>
@@ -302,7 +309,7 @@ export function BillScanner({ header, onHeaderChange }: Props) {
           <h3>📋 Bill Scanner</h3>
           <small>Scan → AI Edit → Export</small>
         </div>
-        <button className="closeBtn" onClick={() => setIsOpen(false)}>×</button>
+        <button className="closeBtn" onClick={handleClose}>×</button>
       </div>
 
       {/* tab switcher */}
