@@ -16,6 +16,16 @@ type Props = {
   billDetails: BillDetails;
 };
 
+function parseSizeDisplay(size: string): string {
+  if (!size.trim()) return "";
+  const parts = size.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
+  if (parts.length >= 2) {
+    const result = parts.reduce((a, b) => a * b, 1);
+    return `${size} = ${result}`;
+  }
+  return size;
+}
+
 export function BillPreview({ header, rows, billDetails }: Props) {
   const total = rows.reduce((s, r) => s + r.amount, 0);
   const balance = total - billDetails.advance;
@@ -29,22 +39,14 @@ export function BillPreview({ header, rows, billDetails }: Props) {
       <div className="pbBizName">{header.businessName || "BUSINESS NAME"}</div>
 
       {/* Contact */}
-      {header.phone && (
-        <p className="pbContactLine">Mobile No. {header.phone}</p>
-      )}
-      {header.address && (
-        <p className="pbContactLine">{header.address}</p>
-      )}
-      {header.gstNumber && (
-        <p className="pbContactLine">GST: {header.gstNumber}</p>
-      )}
+      {header.phone && <p className="pbContactLine">Mobile No. {header.phone}</p>}
+      {header.address && <p className="pbContactLine">{header.address}</p>}
+      {header.gstNumber && <p className="pbContactLine">GST: {header.gstNumber}</p>}
 
       <div className="pbBottomLine" />
 
       {/* Tagline */}
-      {header.tagline && (
-        <p className="pbTagline">{header.tagline}</p>
-      )}
+      {header.tagline && <p className="pbTagline">{header.tagline}</p>}
 
       {/* Date */}
       <p className="pbDate">Date: {billDetails.date}</p>
@@ -55,45 +57,62 @@ export function BillPreview({ header, rows, billDetails }: Props) {
       <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
 
       {/* Subject */}
-      {billDetails.subject && (
-        <p className="pbSub">Sub: {billDetails.subject}</p>
-      )}
+      {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}
 
-      {/* Table */}
+      {/* Items Table — full 5 columns */}
       <table className="pbTable">
         <thead>
           <tr>
-            <th style={{ width: 32 }}>Sr. No</th>
-            <th>Particulars</th>
-            <th style={{ width: 80 }}>Amount</th>
+            <th className="pbThSr">Sr. No</th>
+            <th className="pbThParticulars">Particulars</th>
+            <th className="pbThSize">Size</th>
+            <th className="pbThRate">Rate (₹)</th>
+            <th className="pbThAmt">Amount (₹)</th>
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={3} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic" }}>No items yet</td>
+              <td colSpan={5} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
+                No items yet — add rows in the center panel
+              </td>
             </tr>
           )}
           {rows.map(row => (
             <tr key={row.id}>
               <td className="pbSrCell">{row.sr}</td>
-              <td>{row.particulars || <span style={{ color: "#aaa" }}>—</span>}</td>
+              <td className="pbParticularsCell">
+                {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
+              </td>
+              <td className="pbSizeCell">
+                {row.size ? (
+                  <>
+                    <span className="pbSizeRaw">{row.size}</span>
+                    {row.size.match(/[x*×]/i) && (
+                      <span className="pbSizeCalc">
+                        {" = "}{row.size.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n)).reduce((a, b) => a * b, 1)}
+                      </span>
+                    )}
+                  </>
+                ) : <span style={{ color: "#bbb" }}>—</span>}
+              </td>
+              <td className="pbRateCell">{row.rate > 0 ? money(row.rate) : "—"}</td>
               <td className="pbAmtCell">{row.amount > 0 ? money(row.amount) : "—"}</td>
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="pbTfTotal">
-            <td colSpan={2} className="pbRight" style={{ fontWeight: "bold" }}>Total</td>
-            <td className="pbAmtCell">{money(total)}</td>
+            <td colSpan={4} className="pbRight"><strong>Total</strong></td>
+            <td className="pbAmtCell"><strong>{money(total)}</strong></td>
           </tr>
           <tr className="pbTfAdvance">
-            <td colSpan={2} className="pbRight">Advance</td>
+            <td colSpan={4} className="pbRight">Advance</td>
             <td className="pbAmtCell">{money(billDetails.advance)}</td>
           </tr>
           <tr className="pbTfBalance">
-            <td colSpan={2} className="pbRight" style={{ fontWeight: "bold" }}>Balance</td>
-            <td className="pbAmtCell" style={{ color: "#15803d" }}>{money(balance)}</td>
+            <td colSpan={4} className="pbRight"><strong>Balance</strong></td>
+            <td className="pbAmtCell" style={{ color: "#15803d", fontWeight: 700 }}>{money(balance)}</td>
           </tr>
         </tfoot>
       </table>
@@ -109,7 +128,7 @@ export function BillPreview({ header, rows, billDetails }: Props) {
       {/* Signature */}
       {billDetails.showSignature && (
         <div className="pbSignatureArea">
-          <span className="pbSignatureLine" />
+          <div className="pbSignatureLine" />
           <p>{billDetails.proprietorName}</p>
           <p>Authorised Signatory</p>
         </div>

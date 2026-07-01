@@ -584,7 +584,17 @@ input:focus, textarea:focus, select:focus {
   text-align: center;
 }
 .pbTable td.pbSrCell { text-align: center; width: 36px; }
+.pbTable td.pbParticularsCell { }
+.pbTable td.pbSizeCell { text-align: center; white-space: nowrap; font-size: 10px; }
+.pbTable td.pbRateCell { text-align: right; white-space: nowrap; }
 .pbTable td.pbAmtCell { text-align: right; font-weight: 600; white-space: nowrap; }
+.pbTable th.pbThSr { width: 32px; }
+.pbTable th.pbThParticulars { }
+.pbTable th.pbThSize { width: 80px; }
+.pbTable th.pbThRate { width: 72px; text-align: right; }
+.pbTable th.pbThAmt { width: 80px; text-align: right; }
+.pbSizeRaw { font-size: 10px; color: #374151; }
+.pbSizeCalc { font-size: 9px; color: #6b7280; display: block; }
 .pbTable tfoot td { font-weight: bold; }
 .pbTable tfoot tr.pbTfTotal td { border-top: 2px solid #000; background: #f5f5f5; }
 .pbTable tfoot tr.pbTfAdvance td { background: #fff; }

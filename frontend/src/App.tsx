@@ -9,19 +9,27 @@ import { grandTotal, makeId, money } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import type { BillDetails, BillTable, HeaderTemplate } from "./types";
 
-// Convert scanner rows → BillTable for export
+// Convert editor rows → BillTable for export (all 5 columns)
 function toBillTable(rows: Array<{ id: string; sr: number; particulars: string; size: string; rate: number; amount: number }>): BillTable {
   return {
     id: "table-main",
     title: "Bill Items",
     columns: [
-      { id: "sr", label: "Sr. No", kind: "number" },
-      { id: "particulars", label: "Particulars", kind: "text" },
-      { id: "amount", label: "Amount", kind: "number" }
+      { id: "sr",          label: "Sr. No",      kind: "number" },
+      { id: "particulars", label: "Particulars", kind: "text"   },
+      { id: "size",        label: "Size",        kind: "text"   },
+      { id: "rate",        label: "Rate",        kind: "number" },
+      { id: "amount",      label: "Amount",      kind: "number" }
     ],
     rows: rows.map(r => ({
       id: r.id,
-      cells: { sr: String(r.sr), particulars: r.particulars, amount: String(r.amount) }
+      cells: {
+        sr:          String(r.sr),
+        particulars: r.particulars,
+        size:        r.size,
+        rate:        String(r.rate),
+        amount:      String(r.amount)
+      }
     }))
   };
 }
@@ -32,16 +40,18 @@ type EditorRow = { id: string; sr: number; particulars: string; size: string; ra
 function recalc(rows: EditorRow[]): EditorRow[] {
   return rows.map((r, i) => {
     const parsed = parseSize(r.size);
-    const amt = parsed > 0 ? Math.round(parsed * r.rate * 100) / 100 : r.amount;
+    // always recalculate amount from size × rate (0 if either is empty/zero)
+    const amt = Math.round(parsed * r.rate * 100) / 100;
     return { ...r, sr: i + 1, amount: amt };
   });
 }
 
 function parseSize(size: string): number {
   const clean = size.trim();
+  if (!clean) return 1; // empty size = 1 (so amount = rate directly)
   const parts = clean.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
   if (parts.length >= 2) return parts.reduce((a, b) => a * b, 1);
-  return parseFloat(clean) || 0;
+  return parseFloat(clean) || 1;
 }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
@@ -105,7 +115,12 @@ export function App() {
   };
 
   const updateRow = (id: string, field: keyof EditorRow, value: string | number) => {
-    setRows(prev => recalc(prev.map(r => r.id === id ? { ...r, [field]: value } : r)));
+    setRows(prev => {
+      const updated = prev.map(r => r.id === id ? { ...r, [field]: value } : r);
+      // only recalc amount from size×rate when size or rate changes, not when amount itself is edited
+      if (field === "amount") return updated.map((r, i) => ({ ...r, sr: i + 1 }));
+      return recalc(updated);
+    });
   };
 
   const deleteRow = (id: string) => {
