@@ -392,7 +392,52 @@ export function App() {
         </button>
       )}
 
-      <AIChat header={header} tables={tables} onUpdate={handleAIUpdate} />
+      <AIChat
+        header={header}
+        cols={[
+          { id: "sr", label: "Sr. No", kind: "number", locked: true },
+          { id: "particulars", label: "Particulars", kind: "text", locked: true },
+          { id: "size", label: "Size", kind: "text", isSize: true },
+          { id: "rate", label: "Rate (₹)", kind: "number", isRate: true },
+          { id: "amount", label: "Amount (₹)", kind: "formula", locked: true, isAmount: true }
+        ]}
+        rows={rows.map(r => ({
+          id: r.id,
+          cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, rate: String(r.rate), amount: String(r.amount) }
+        }))}
+        billDetails={billDetails}
+        onHeaderChange={setHeader}
+        onColsChange={() => {}}
+        onRowsChange={(updaterOrRows) => {
+          if (typeof updaterOrRows === "function") {
+            setRows(prev => {
+              const prevMapped = prev.map(r => ({
+                id: r.id,
+                cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, rate: String(r.rate), amount: String(r.amount) }
+              }));
+              const nextMapped = (updaterOrRows as any)(prevMapped);
+              return nextMapped.map((r: any) => ({
+                id: r.id,
+                sr: parseInt(r.cells.sr) || 1,
+                particulars: r.cells.particulars || "",
+                size: r.cells.size || "",
+                rate: parseFloat(r.cells.rate) || 0,
+                amount: parseFloat(r.cells.amount) || 0
+              }));
+            });
+          } else {
+            setRows(updaterOrRows.map((r: any) => ({
+              id: r.id,
+              sr: parseInt(r.cells.sr) || 1,
+              particulars: r.cells.particulars || "",
+              size: r.cells.size || "",
+              rate: parseFloat(r.cells.rate) || 0,
+              amount: parseFloat(r.cells.amount) || 0
+            })));
+          }
+        }}
+        onBillDetailsChange={setBillDetails}
+      />
     </div>
   );
 }

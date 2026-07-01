@@ -353,6 +353,23 @@ RULES:
     const data = await response.json();
     return data.response || "{}";
   }
+  // Raw Ollama call with a pre-built prompt (used by AIChat for full bill control)
+  async rawOllamaCall(fullPrompt: string): Promise<string> {
+    const response = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama3.2:latest",
+        prompt: fullPrompt,
+        stream: false,
+        format: "json"
+      })
+    });
+    if (!response.ok) throw new Error("Ollama not running. Start it with: ollama serve");
+    const data = await response.json();
+    return data.response || "{}";
+  }
+
   async extractBillFromImage(imageBase64: string): Promise<string> {
     const extractionPrompt = `You are a bill data extractor. Look at this bill/invoice image carefully and extract every row of data.
 

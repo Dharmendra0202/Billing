@@ -1,23 +1,73 @@
-import { MessageCircle, Send, Settings, X, Download, Trash2, Image, XCircle } from "lucide-react";
+import { MessageCircle, Send, Settings, X, Download, Trash2, Image, XCircle, Bot, User, Sparkles } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { AIService, type AIMessage } from "../lib/aiService";
-import { executeCommands } from "../lib/aiCommands";
-import type { BillTable, HeaderTemplate } from "../types";
+import type { HeaderTemplate, BillDetails } from "../types";
 
+// ── Row / Col types (same as App.tsx) ────────────────────────────────────────
+type ColKind = "text" | "number" | "formula";
+type ColDef = {
+  id: string;
+  label: string;
+  kind: ColKind;
+  width?: number;
+  locked?: boolean;
+  isSize?: boolean;
+  isRate?: boolean;
+  isAmount?: boolean;
+};
+type EditorRow = { id: string; cells: Record<string, string> };
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+function parseSize(val: string): number {
+  const clean = val.trim();
+  if (!clean) return 1;
+  const parts = clean.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
+  if (parts.length >= 2) return parts.reduce((a, b) => a * b, 1);
+  return parseFloat(clean) || 1;
+}
+
+function computeAmount(row: EditorRow, cols: ColDef[]): number {
+  const sizeCol = cols.find(c => c.isSize);
+  const rateCol = cols.find(c => c.isRate);
+  if (!sizeCol || !rateCol) return 0;
+  return Math.round(parseSize(row.cells[sizeCol.id] || "") * (parseFloat(row.cells[rateCol.id] || "0") || 0) * 100) / 100;
+}
+
+function renumber(rows: EditorRow[]): EditorRow[] {
+  return rows.map((r, i) => ({ ...r, cells: { ...r.cells, sr: String(i + 1) } }));
+}
+
+function recalcAmounts(rows: EditorRow[], cols: ColDef[]): EditorRow[] {
+  const amtCol = cols.find(c => c.isAmount);
+  if (!amtCol) return rows;
+  return rows.map(r => ({ ...r, cells: { ...r.cells, [amtCol.id]: String(computeAmount(r, cols)) } }));
+}
+
+// ── Props ─────────────────────────────────────────────────────────────────────
 type Props = {
   header: HeaderTemplate;
-  tables: BillTable[];
-  onUpdate: (header: HeaderTemplate, tables: BillTable[]) => void;
+  cols: ColDef[];
+  rows: EditorRow[];
+  billDetails: BillDetails;
+  onHeaderChange: (h: HeaderTemplate) => void;
+  onColsChange: (c: ColDef[]) => void;
+  onRowsChange: (r: EditorRow[] | ((prev: EditorRow[]) => EditorRow[])) => void;
+  onBillDetailsChange: (d: BillDetails) => void;
 };
 
-export function AIChat({ header, tables, onUpdate }: Props) {
+export function AIChat({
+  header, cols, rows, billDetails,
+  onHeaderChange, onColsChange, onRowsChange, onBillDetailsChange
+}: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("ai_api_key") || "");
   const [provider, setProvider] = useState<"openai" | "anthropic" | "ollama">(
-    () => (localStorage.getItem("ai_provider") as "openai" | "anthropic" | "ollama") || "ollama"
+    () => (localStorage.getItem("ai_provider") as any) || "ollama"
   );
   const [showSettings, setShowSettings] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -27,366 +77,481 @@ export function AIChat({ header, tables, onUpdate }: Props) {
   const aiServiceRef = useRef<AIService | null>(null);
 
   useEffect(() => {
-    if (provider === "ollama" || apiKey) {
-      aiServiceRef.current = new AIService(apiKey || "", provider);
-    }
+    aiServiceRef.current = new AIService(apiKey || "", provider);
   }, [apiKey, provider]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const saveApiKey = () => {
+  const saveSettings = () => {
     localStorage.setItem("ai_api_key", apiKey);
     localStorage.setItem("ai_provider", provider);
     aiServiceRef.current = new AIService(apiKey || "", provider);
     setShowSettings(false);
   };
 
+  // ── Image upload ──────────────────────────────────────────────────────────
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // Validate file type
-    if (!file.type.startsWith("image/")) {
-      alert("Please select an image file (JPG, PNG, GIF, etc.)");
-      return;
-    }
-
-    // Validate file size (max 10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      alert("Image size should be less than 10MB");
-      return;
-    }
-
-    try {
-      const base64 = await AIService.fileToBase64(file);
-      setSelectedImage(base64);
-      setSelectedImageName(file.name);
-    } catch (error) {
-      console.error("Error converting image:", error);
-      alert("Failed to load image. Please try again.");
-    }
-
-    // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    if (!file.type.startsWith("image/")) { alert("Please select an image file"); return; }
+    if (file.size > 10 * 1024 * 1024) { alert("Image must be < 10 MB"); return; }
+    setSelectedImage(await AIService.fileToBase64(file));
+    setSelectedImageName(file.name);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const clearSelectedImage = () => {
-    setSelectedImage(null);
-    setSelectedImageName("");
+  // ── Apply AI command to actual app state ─────────────────────────────────
+  const applyCommand = (parsed: any): string => {
+    const { action, data } = parsed;
+    const amtCol  = cols.find(c => c.isAmount);
+    const sizeCol = cols.find(c => c.isSize);
+    const rateCol = cols.find(c => c.isRate);
+    const partCol = cols.find(c => c.id === "particulars");
+
+    switch (action) {
+
+      case "ADD_ROW": {
+        onRowsChange(prev => {
+          const newCells: Record<string, string> = { sr: String(prev.length + 1) };
+          cols.forEach(c => { newCells[c.id] = ""; });
+          if (partCol)  newCells[partCol.id]  = data.particulars || "";
+          if (sizeCol)  newCells[sizeCol.id]  = String(data.size || "1");
+          if (rateCol)  newCells[rateCol.id]  = String(data.rate || "0");
+          const newRow: EditorRow = { id: uid(), cells: newCells };
+          const next = [...prev, newRow];
+          return recalcAmounts(next, cols);
+        });
+        break;
+      }
+
+      case "ADD_MULTIPLE_ROWS": {
+        onRowsChange(prev => {
+          const added: EditorRow[] = (data.rows || []).map((item: any, i: number) => {
+            const cells: Record<string, string> = { sr: String(prev.length + i + 1) };
+            cols.forEach(c => { cells[c.id] = ""; });
+            if (partCol)  cells[partCol.id]  = item.particulars || "";
+            if (sizeCol)  cells[sizeCol.id]  = String(item.size || "1");
+            if (rateCol)  cells[rateCol.id]  = String(item.rate || "0");
+            return { id: uid(), cells };
+          });
+          return recalcAmounts(renumber([...prev, ...added]), cols);
+        });
+        break;
+      }
+
+      case "UPDATE_ROW": {
+        onRowsChange(prev => {
+          const updated = prev.map(r => {
+            if (r.cells.sr !== String(data.sr)) return r;
+            const next = { ...r, cells: { ...r.cells } };
+            if (data.particulars !== undefined && partCol) next.cells[partCol.id] = String(data.particulars);
+            if (data.size        !== undefined && sizeCol) next.cells[sizeCol.id] = String(data.size);
+            if (data.rate        !== undefined && rateCol) next.cells[rateCol.id] = String(data.rate);
+            return next;
+          });
+          return recalcAmounts(updated, cols);
+        });
+        break;
+      }
+
+      case "DELETE_ROW": {
+        onRowsChange(prev =>
+          renumber(recalcAmounts(prev.filter(r => r.cells.sr !== String(data.sr)), cols))
+        );
+        break;
+      }
+
+      case "DELETE_LAST_ROW": {
+        onRowsChange(prev => {
+          if (prev.length <= 1) return prev;
+          return renumber(recalcAmounts(prev.slice(0, -1), cols));
+        });
+        break;
+      }
+
+      case "CLEAR_TABLE": {
+        const blankCells: Record<string, string> = { sr: "1" };
+        cols.forEach(c => { blankCells[c.id] = ""; });
+        onRowsChange([{ id: uid(), cells: blankCells }]);
+        break;
+      }
+
+      case "UPDATE_DETAIL": {
+        const { field, value } = data;
+        onBillDetailsChange({ ...billDetails, [field]: field === "advance" ? (parseFloat(value) || 0) : value });
+        break;
+      }
+
+      case "UPDATE_HEADER": {
+        onHeaderChange({ ...header, [data.field]: data.value });
+        break;
+      }
+
+      case "ADD_COLUMN": {
+        const newId = uid();
+        const newCol: ColDef = {
+          id: newId,
+          label: data.label || "New Column",
+          kind: data.kind === "number" ? "number" : "text",
+          width: 100
+        };
+        // Insert before amount col
+        const amtIdx = cols.findIndex(c => c.isAmount);
+        const nextCols = [...cols];
+        nextCols.splice(amtIdx >= 0 ? amtIdx : nextCols.length, 0, newCol);
+        onColsChange(nextCols);
+        onRowsChange(prev => prev.map(r => ({ ...r, cells: { ...r.cells, [newId]: "" } })));
+        break;
+      }
+
+      case "RENAME_COLUMN": {
+        onColsChange(cols.map(c =>
+          (c.id === data.colId || c.label === data.oldLabel)
+            ? { ...c, label: data.newLabel }
+            : c
+        ));
+        break;
+      }
+
+      case "APPLY_GST": {
+        const pct = parseFloat(data.percent) || 18;
+        onRowsChange(prev => {
+          const currentTotal = prev.reduce((s, r) => s + (parseFloat(r.cells[amtCol?.id ?? ""] || "0") || 0), 0);
+          const gstAmt = Math.round(currentTotal * pct) / 100;
+          const cells: Record<string, string> = { sr: String(prev.length + 1) };
+          cols.forEach(c => { cells[c.id] = ""; });
+          if (partCol)  cells[partCol.id]  = `GST @ ${pct}%`;
+          if (rateCol)  cells[rateCol.id]  = String(gstAmt);
+          if (sizeCol)  cells[sizeCol.id]  = "1";
+          if (amtCol)   cells[amtCol.id]   = String(gstAmt);
+          return renumber([...prev, { id: uid(), cells }]);
+        });
+        break;
+      }
+
+      case "APPLY_DISCOUNT": {
+        const pct = parseFloat(data.percent) || 10;
+        onRowsChange(prev => {
+          const currentTotal = prev.reduce((s, r) => s + (parseFloat(r.cells[amtCol?.id ?? ""] || "0") || 0), 0);
+          const discAmt = -Math.round(currentTotal * pct) / 100;
+          const cells: Record<string, string> = { sr: String(prev.length + 1) };
+          cols.forEach(c => { cells[c.id] = ""; });
+          if (partCol) cells[partCol.id] = `Discount @ ${pct}%`;
+          if (rateCol) cells[rateCol.id] = String(discAmt);
+          if (sizeCol) cells[sizeCol.id] = "1";
+          if (amtCol)  cells[amtCol.id]  = String(discAmt);
+          return renumber([...prev, { id: uid(), cells }]);
+        });
+        break;
+      }
+
+      default:
+        break;
+    }
+
+    return parsed.reply || "Done!";
   };
 
+  // ── Build AI prompt that knows about the CURRENT state ────────────────────
+  const buildFullPrompt = (userPrompt: string): string => {
+    const rowSummary = rows.map(r => {
+      const srVal = r.cells.sr;
+      const partVal = r.cells[cols.find(c => c.id === "particulars")?.id ?? ""] || "";
+      const sizeVal = r.cells[cols.find(c => c.isSize)?.id ?? ""] || "";
+      const rateVal = r.cells[cols.find(c => c.isRate)?.id ?? ""] || "";
+      const amtVal  = r.cells[cols.find(c => c.isAmount)?.id ?? ""] || "";
+      return { sr: srVal, particulars: partVal, size: sizeVal, rate: rateVal, amount: amtVal };
+    });
+
+    const colSummary = cols.map(c => ({ id: c.id, label: c.label, kind: c.kind, isSize: c.isSize, isRate: c.isRate, isAmount: c.isAmount }));
+
+    return `You are an AI assistant that fully controls a bill/invoice editor.
+
+## CURRENT STATE
+### Header
+${JSON.stringify(header, null, 2)}
+
+### Bill Details
+${JSON.stringify(billDetails, null, 2)}
+
+### Columns
+${JSON.stringify(colSummary, null, 2)}
+
+### Rows (${rows.length} items)
+${JSON.stringify(rowSummary, null, 2)}
+
+## YOUR CAPABILITIES
+You can do ANYTHING the user asks. You have full control:
+- Edit any row cell
+- Add/delete rows
+- Change bill details (client, date, subject, advance)
+- Change header (business name, phone, address)
+- Add new columns
+- Rename columns (e.g. "Size" → "SFT")
+- Apply GST / discount
+- Clear the table
+
+## RESPONSE FORMAT
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "action": "ACTION_NAME",
+  "data": { ... },
+  "reply": "Short confirmation message"
+}
+
+## ACTIONS
+
+ADD_ROW:
+{ "action": "ADD_ROW", "data": { "particulars": "Window glass", "size": "10x5", "rate": 200 }, "reply": "Added row..." }
+
+ADD_MULTIPLE_ROWS:
+{ "action": "ADD_MULTIPLE_ROWS", "data": { "rows": [{"particulars":"...", "size":"...", "rate":0},...] }, "reply": "..." }
+
+UPDATE_ROW (sr is 1-based row number):
+{ "action": "UPDATE_ROW", "data": { "sr": 2, "particulars": "new name", "rate": 300 }, "reply": "..." }
+
+DELETE_ROW (sr is 1-based):
+{ "action": "DELETE_ROW", "data": { "sr": 3 }, "reply": "..." }
+
+DELETE_LAST_ROW:
+{ "action": "DELETE_LAST_ROW", "data": {}, "reply": "..." }
+
+CLEAR_TABLE:
+{ "action": "CLEAR_TABLE", "data": {}, "reply": "Table cleared." }
+
+UPDATE_DETAIL (fields: clientName, clientAddress, date, subject, advance, note, showNote, showSignature):
+{ "action": "UPDATE_DETAIL", "data": { "field": "clientName", "value": "ABC Corp" }, "reply": "..." }
+
+UPDATE_HEADER (fields: businessName, phone, address, gstNumber, tagline):
+{ "action": "UPDATE_HEADER", "data": { "field": "businessName", "value": "XYZ Works" }, "reply": "..." }
+
+ADD_COLUMN (adds a new custom column before Amount):
+{ "action": "ADD_COLUMN", "data": { "label": "Unit", "kind": "text" }, "reply": "..." }
+
+RENAME_COLUMN (rename by current label):
+{ "action": "RENAME_COLUMN", "data": { "oldLabel": "Size", "newLabel": "SFT" }, "reply": "Renamed Size to SFT." }
+
+APPLY_GST:
+{ "action": "APPLY_GST", "data": { "percent": 18 }, "reply": "Added 18% GST row." }
+
+APPLY_DISCOUNT:
+{ "action": "APPLY_DISCOUNT", "data": { "percent": 10 }, "reply": "Applied 10% discount." }
+
+## FORMULA RULES
+- Amount = parseSize(size) * rate
+- parseSize("10x5") = 50, parseSize("3x4x2") = 24, parseSize("12") = 12
+- Total = SUM of all amount values
+- Balance = Total − advance
+
+## User command: ${userPrompt}
+
+JSON response:`;
+  };
+
+  // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!input.trim() && !selectedImage) || !aiServiceRef.current) return;
 
-    // If we have an image, use vision model
+    // Image analysis
     if (selectedImage) {
-      const userMessage: AIMessage = {
-        id: Date.now().toString(),
-        role: "user",
+      const userMsg: AIMessage = {
+        id: Date.now().toString(), role: "user",
         content: input.trim() || "What do you see in this image?",
-        timestamp: Date.now(),
-        image: selectedImage
+        timestamp: Date.now(), image: selectedImage
       };
-
-      setMessages((prev) => [...prev, userMessage]);
+      setMessages(prev => [...prev, userMsg]);
       setInput("");
-      const imageToAnalyze = selectedImage;
-      const prompt = input.trim() || "What do you see in this image? Describe it in detail.";
-      clearSelectedImage();
+      const img = selectedImage;
+      const prompt = input.trim() || "Describe this image in detail.";
+      setSelectedImage(null); setSelectedImageName("");
       setIsProcessing(true);
-
       try {
-        const response = await aiServiceRef.current.analyzeImage(imageToAnalyze, prompt);
-
-        const assistantMessage: AIMessage = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: response,
-          timestamp: Date.now()
-        };
-
-        setMessages((prev) => [...prev, assistantMessage]);
-      } catch (error) {
-        const errorMessage: AIMessage = {
-          id: (Date.now() + 2).toString(),
-          role: "assistant",
-          content: `Error: ${error instanceof Error ? error.message : "Failed to analyze image"}`,
-          timestamp: Date.now()
-        };
-        setMessages((prev) => [...prev, errorMessage]);
-      } finally {
-        setIsProcessing(false);
-      }
+        const resp = await aiServiceRef.current.analyzeImage(img, prompt);
+        setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: "assistant", content: resp, timestamp: Date.now() }]);
+      } catch (err) {
+        setMessages(prev => [...prev, { id: (Date.now()+2).toString(), role: "assistant", content: `Error: ${err instanceof Error ? err.message : "Failed"}`, timestamp: Date.now() }]);
+      } finally { setIsProcessing(false); }
       return;
     }
 
-    // Regular text message
-    const userMessage: AIMessage = {
-      id: Date.now().toString(),
-      role: "user",
-      content: input.trim(),
-      timestamp: Date.now()
+    // Text command — controls the ACTUAL bill
+    const userMsg: AIMessage = {
+      id: Date.now().toString(), role: "user",
+      content: input.trim(), timestamp: Date.now()
     };
-
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages(prev => [...prev, userMsg]);
     setInput("");
     setIsProcessing(true);
 
     try {
-      const result = await aiServiceRef.current.processCommand(
-        userMessage.content,
-        header,
-        tables
-      );
-
-      const assistantMessage: AIMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: result.response,
-        timestamp: Date.now()
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      // Execute commands
-      if (result.commands && result.commands.length > 0) {
-        const { header: newHeader, tables: newTables } = executeCommands(
-          result.commands,
-          header,
-          tables
-        );
-        onUpdate(newHeader, newTables);
-      }
-    } catch (error) {
-      const errorMessage: AIMessage = {
-        id: (Date.now() + 2).toString(),
-        role: "assistant",
-        content: `Error: ${error instanceof Error ? error.message : "Something went wrong"}`,
-        timestamp: Date.now()
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsProcessing(false);
-    }
+      const fullPrompt = buildFullPrompt(userMsg.content);
+      const raw = await aiServiceRef.current.rawOllamaCall(fullPrompt);
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error("AI returned invalid response. Try rephrasing.");
+      const parsed = JSON.parse(match[0]);
+      const replyText = applyCommand(parsed);
+      setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: "assistant", content: replyText, timestamp: Date.now() }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { id: (Date.now()+2).toString(), role: "assistant", content: `Error: ${err instanceof Error ? err.message : "Something went wrong"}`, timestamp: Date.now() }]);
+    } finally { setIsProcessing(false); }
   };
 
-  const clearChat = () => {
-    setMessages([]);
-    aiServiceRef.current?.clearHistory();
-  };
+  const clearChat = () => { setMessages([]); aiServiceRef.current?.clearHistory(); };
 
   const exportChat = () => {
-    const chatData = JSON.stringify(messages, null, 2);
-    const blob = new Blob([chatData], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(messages, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = `chat-${Date.now()}.json`;
-    a.click();
+    a.href = url; a.download = `chat-${Date.now()}.json`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  if (!isOpen) {
-    return (
-      <button
-        className="aiChatToggle"
-        onClick={() => setIsOpen(true)}
-        title="Open AI Assistant"
-      >
-        <MessageCircle size={24} />
-        {messages.length > 0 && <span className="badge">{messages.length}</span>}
-      </button>
-    );
-  }
+  // Quick prompt chips
+  const quickPrompts = [
+    "add row for door work 10x8 rate 500",
+    "rename Size column to SFT",
+    "add 18% GST",
+    "set advance to 50000",
+    "delete last row",
+    "add a Unit text column",
+    "apply 5% discount",
+  ];
 
+  // ── Toggle button ─────────────────────────────────────────────────────────
+  if (!isOpen) return (
+    <button className="aiChatToggle" onClick={() => setIsOpen(true)} title="Open AI Assistant">
+      <MessageCircle size={24} />
+      {messages.length > 0 && <span className="badge">{messages.filter(m => m.role === "user").length}</span>}
+    </button>
+  );
+
+  // ── Panel ─────────────────────────────────────────────────────────────────
   return (
     <div className="aiChatPanel">
       <div className="aiChatHeader">
         <div>
           <h3>AI Assistant</h3>
-          <small>Control your bill with natural language</small>
+          <small>Full control — say anything</small>
         </div>
         <div className="aiChatActions">
-          <button onClick={exportChat} title="Export chat" disabled={messages.length === 0}>
-            <Download size={18} />
-          </button>
-          <button onClick={clearChat} title="Clear chat" disabled={messages.length === 0}>
-            <Trash2 size={18} />
-          </button>
-          <button onClick={() => setShowSettings(!showSettings)} title="Settings">
-            <Settings size={18} />
-          </button>
-          <button onClick={() => setIsOpen(false)} title="Close">
-            <X size={18} />
-          </button>
+          <button onClick={exportChat} title="Export chat" disabled={messages.length === 0}><Download size={18} /></button>
+          <button onClick={clearChat} title="Clear chat" disabled={messages.length === 0}><Trash2 size={18} /></button>
+          <button onClick={() => setShowSettings(!showSettings)} title="Settings"><Settings size={18} /></button>
+          <button onClick={() => setIsOpen(false)} title="Close"><X size={18} /></button>
         </div>
       </div>
 
       {showSettings && (
         <div className="aiSettings">
-          <label>
-            AI Provider
-            <select value={provider} onChange={(e) => setProvider(e.target.value as any)}>
-              <option value="ollama">🆓 Ollama (FREE - Local)</option>
-              <option value="openai">OpenAI (ChatGPT - Paid)</option>
-              <option value="anthropic">Anthropic (Claude - Paid)</option>
+          <label>AI Provider
+            <select value={provider} onChange={e => setProvider(e.target.value as any)}>
+              <option value="ollama">🆓 Ollama (FREE – Local)</option>
+              <option value="openai">OpenAI (ChatGPT – Paid)</option>
+              <option value="anthropic">Anthropic (Claude – Paid)</option>
             </select>
           </label>
           {provider !== "ollama" && (
-            <label>
-              API Key
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={`Enter your ${provider === "openai" ? "OpenAI" : "Anthropic"} API key`}
-              />
+            <label>API Key
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                placeholder={`Enter your ${provider === "openai" ? "OpenAI" : "Anthropic"} API key`} />
             </label>
           )}
           {provider === "ollama" && (
-            <div style={{ padding: "10px", background: "#e8f5e9", borderRadius: "8px", marginBottom: "10px" }}>
-              <p style={{ margin: 0, fontSize: "14px", color: "#2e7d32" }}>
-                ✅ Using <strong>FREE</strong> local AI (Ollama)
-                <br />
-                <small style={{ color: "#558b2f" }}>No internet or API key needed!</small>
-              </p>
-              <p style={{ margin: "8px 0 0 0", fontSize: "12px", color: "#1565c0" }}>
-                📷 <strong>Image analysis available!</strong> Upload images to analyze with Moondream vision model (fast!).
-              </p>
+            <div style={{ padding: 10, background: "#e8f5e9", borderRadius: 8, fontSize: 13, color: "#2e7d32" }}>
+              ✅ Using <strong>FREE</strong> local AI (Ollama) — no API key needed!
             </div>
           )}
-          <button className="primaryButton" onClick={saveApiKey}>
-            Save Configuration
-          </button>
-          {provider !== "ollama" && (
-            <p className="helpText">
-              Don't have an API key?{" "}
-              <a
-                href={
-                  provider === "openai"
-                    ? "https://platform.openai.com/api-keys"
-                    : "https://console.anthropic.com/"
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Get one here
-              </a>
-            </p>
-          )}
+          <button className="primaryButton" onClick={saveSettings}>Save</button>
         </div>
       )}
 
+      {/* Context strip */}
+      <div className="aiContextPill">
+        <Sparkles size={13} />
+        <span>
+          {rows.length} rows · Total ₹{rows.reduce((s, r) => s + (parseFloat(r.cells[cols.find(c => c.isAmount)?.id ?? ""] || "0") || 0), 0).toLocaleString("en-IN")}
+        </span>
+      </div>
+
+      {/* Messages */}
       <div className="aiChatMessages">
         {messages.length === 0 && (
           <div className="aiWelcome">
-            <MessageCircle size={48} />
-            <h4>Welcome to AI-Powered Bill Editing</h4>
-            <p>Tell me what you want to do with your bill. For example:</p>
+            <Bot size={40} style={{ color: "#1a56db", opacity: 0.7 }} />
+            <h4>AI has full control of your bill</h4>
+            <p>Say anything — I can add/edit/delete rows, rename columns, change client details, apply GST, and more.</p>
             <ul>
-              <li>"Change business name to ABC Company"</li>
-              <li>"Add a new table for services"</li>
-              <li>"Add 5 rows to the first table"</li>
-              <li>"Export this to Excel"</li>
+              <li>"add row for door work 10x8 rate 500"</li>
+              <li>"rename Size column to SFT"</li>
+              <li>"set client name to Sharma Building"</li>
+              <li>"add 18% GST"</li>
+              <li>"change row 2 rate to 350"</li>
+              <li>"add a Unit text column"</li>
             </ul>
-            {provider === "ollama" && (
-              <div className="visionFeature">
-                <Image size={24} />
-                <p><strong>NEW!</strong> Upload images for AI analysis using the 📷 button below.</p>
-              </div>
-            )}
-            {provider !== "ollama" && !apiKey && (
-              <button className="primaryButton" onClick={() => setShowSettings(true)}>
-                <Settings size={17} /> Configure AI First
-              </button>
-            )}
           </div>
         )}
 
-        {messages.map((message) => (
-          <div key={message.id} className={`aiMessage ${message.role}`}>
-            {message.image && (
-              <div className="aiMessageImage">
-                <img src={message.image} alt="Uploaded" />
-              </div>
-            )}
-            <div className="aiMessageContent">{message.content}</div>
-            <div className="aiMessageTime">
-              {new Date(message.timestamp).toLocaleTimeString()}
+        {messages.map(msg => (
+          <div key={msg.id} className={`aiMessage ${msg.role}`}>
+            <div className="aiMsgIcon">
+              {msg.role === "user" ? <User size={13} /> : <Bot size={13} />}
+            </div>
+            <div>
+              {msg.image && <div className="aiMessageImage"><img src={msg.image} alt="Uploaded" /></div>}
+              <div className="aiMessageContent">{msg.content}</div>
+              <div className="aiMessageTime">{new Date(msg.timestamp).toLocaleTimeString()}</div>
             </div>
           </div>
         ))}
 
         {isProcessing && (
           <div className="aiMessage assistant">
-            <div className="aiMessageContent">
-              <span className="typing">{selectedImage ? "Analyzing image..." : "Thinking..."}</span>
-            </div>
+            <div className="aiMsgIcon"><Bot size={13} /></div>
+            <div className="aiMessageContent"><span className="typing">Thinking</span></div>
           </div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Image Preview */}
+      {/* Quick prompts */}
+      <div className="quickPrompts">
+        {quickPrompts.map(p => (
+          <button key={p} className="quickPromptBtn" onClick={() => setInput(p)}>{p}</button>
+        ))}
+      </div>
+
+      {/* Image preview */}
       {selectedImage && (
         <div className="imagePreview">
           <img src={selectedImage} alt="Selected" />
           <div className="imagePreviewInfo">
             <span>{selectedImageName}</span>
-            <button onClick={clearSelectedImage} title="Remove image">
+            <button onClick={() => { setSelectedImage(null); setSelectedImageName(""); }} title="Remove">
               <XCircle size={18} />
             </button>
           </div>
         </div>
       )}
 
+      {/* Input */}
       <form className="aiChatInput" onSubmit={handleSubmit}>
-        {/* Hidden file input */}
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleImageSelect}
-          accept="image/*"
-          style={{ display: "none" }}
-        />
-        
-        {/* Image upload button - only show for Ollama */}
+        <input type="file" ref={fileInputRef} onChange={handleImageSelect} accept="image/*" style={{ display: "none" }} />
         {provider === "ollama" && (
-          <button
-            type="button"
-            className="imageUploadBtn"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isProcessing}
-            title="Upload image for analysis (Moondream)"
-          >
+          <button type="button" className="imageUploadBtn"
+            onClick={() => fileInputRef.current?.click()} disabled={isProcessing} title="Upload image">
             <Image size={18} />
           </button>
         )}
-        
         <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            selectedImage
-              ? "Ask about this image... (or just send)"
-              : provider === "ollama" || apiKey
-              ? "Type your command... (e.g., 'Add a new table')"
-              : "Configure AI settings first"
-          }
-          disabled={(provider !== "ollama" && !apiKey) || isProcessing}
+          type="text" value={input}
+          onChange={e => setInput(e.target.value)}
+          placeholder="Type anything… e.g. 'rename Size to SFT' or 'add 18% GST'"
+          disabled={isProcessing}
         />
-        <button
-          type="submit"
-          disabled={(!input.trim() && !selectedImage) || (provider !== "ollama" && !apiKey) || isProcessing}
-          title="Send message"
-        >
+        <button type="submit" disabled={(!input.trim() && !selectedImage) || isProcessing}>
           <Send size={18} />
         </button>
       </form>
