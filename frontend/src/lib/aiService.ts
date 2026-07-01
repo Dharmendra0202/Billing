@@ -277,7 +277,82 @@ Be helpful, concise, and accurate. Always explain what changes you're making.`;
     });
   }
 
-  // Extract structured bill data from image - with your exact column structure
+  // Scanner AI: process natural language commands against the current table rows
+  async scannerCommand(
+    userPrompt: string,
+    currentRows: Array<{ sr: number; particulars: string; size: string; rate: number; amount: number }>,
+    currentDetails: { date: string; clientName: string; clientAddress: string; subject: string; advance: number; note: string }
+  ): Promise<string> {
+    const systemPrompt = `You are an AI assistant controlling a bill/invoice table editor.
+
+CURRENT TABLE STATE:
+${JSON.stringify(currentRows, null, 2)}
+
+CURRENT BILL DETAILS:
+${JSON.stringify(currentDetails, null, 2)}
+
+FORMULAS (always apply these):
+- amount = parseSize(size) * rate
+- parseSize handles "10x5" → 50, "10x5x3" → 150, plain "5.50" → 5.50
+- total = SUM of all amount values
+- balance = total - advance
+
+You must return ONLY a valid JSON object with this exact structure:
+{
+  "action": "one of: ADD_ROW | UPDATE_ROW | DELETE_ROW | UPDATE_DETAIL | CLEAR_TABLE | ADD_MULTIPLE_ROWS | APPLY_GST | APPLY_DISCOUNT",
+  "data": { ... action-specific data ... },
+  "reply": "short human-readable confirmation message"
+}
+
+ACTION SPECS:
+
+ADD_ROW → add one new row:
+{ "action": "ADD_ROW", "data": { "particulars": "item name", "size": "10x5", "rate": 200 }, "reply": "Added row..." }
+
+ADD_MULTIPLE_ROWS → add several rows at once:
+{ "action": "ADD_MULTIPLE_ROWS", "data": { "rows": [ {"particulars":"...", "size":"...", "rate": 0}, ... ] }, "reply": "Added N rows..." }
+
+UPDATE_ROW → change fields of a specific row (use 1-based sr number):
+{ "action": "UPDATE_ROW", "data": { "sr": 2, "particulars": "new name", "size": "5x3", "rate": 300 }, "reply": "Updated row 2..." }
+(only include fields that change, sr is required)
+
+DELETE_ROW → remove a row by sr number:
+{ "action": "DELETE_ROW", "data": { "sr": 3 }, "reply": "Deleted row 3..." }
+
+UPDATE_DETAIL → change bill header details:
+{ "action": "UPDATE_DETAIL", "data": { "field": "clientName|clientAddress|date|subject|advance|note", "value": "new value" }, "reply": "Updated client name..." }
+
+CLEAR_TABLE → remove all rows:
+{ "action": "CLEAR_TABLE", "data": {}, "reply": "Table cleared." }
+
+APPLY_GST → add GST as a new row:
+{ "action": "APPLY_GST", "data": { "percent": 18 }, "reply": "Added 18% GST row..." }
+
+APPLY_DISCOUNT → add discount as a negative row:
+{ "action": "APPLY_DISCOUNT", "data": { "percent": 10 }, "reply": "Applied 10% discount..." }
+
+RULES:
+- Return ONLY the JSON, no markdown, no explanation outside the JSON
+- "reply" must always be a short friendly message about what was done
+- For numbers always use numeric values not strings
+- If you don't understand the request, return: { "action": "UNKNOWN", "data": {}, "reply": "Sorry, I didn't understand. Try: add row for window glass 10x5 rate 200" }`;
+
+    const response = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama3.2:latest",
+        prompt: `${systemPrompt}\n\nUser command: ${userPrompt}\n\nJSON response:`,
+        stream: false,
+        format: "json"
+      })
+    });
+
+    if (!response.ok) throw new Error("Ollama not running. Start it with: ollama serve");
+
+    const data = await response.json();
+    return data.response || "{}";
+  }
   async extractBillFromImage(imageBase64: string): Promise<string> {
     const extractionPrompt = `You are a bill data extractor. Look at this bill/invoice image carefully and extract every row of data.
 
