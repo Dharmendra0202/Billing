@@ -1824,3 +1824,152 @@ select:focus {
 .optionTogglesRow .toggleOption {
   font-size: 12px;
 }
+
+
+/* ── Live Editable Scanner Table ─────────────────────────────────────────── */
+.liveTableWrap {
+  overflow-x: auto;
+}
+
+.liveTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.liveTable th {
+  background: #1e293b;
+  color: #fff;
+  padding: 8px 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.liveTable td {
+  border: 1px solid #d1d5db;
+  padding: 4px;
+  vertical-align: middle;
+}
+
+.liveTable tbody tr:nth-child(even) {
+  background: #f9fafb;
+}
+
+.liveTable tbody tr:hover {
+  background: #f0fdf4;
+}
+
+.cellInput {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 12px;
+  background: transparent;
+}
+
+.cellInput:focus {
+  border-color: #3b82f6;
+  background: #fff;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+}
+
+.cellTextarea {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 12px;
+  background: transparent;
+  resize: vertical;
+  min-height: 40px;
+  font-family: inherit;
+}
+
+.cellTextarea:focus {
+  border-color: #3b82f6;
+  background: #fff;
+  outline: none;
+}
+
+.cellRight {
+  text-align: right;
+}
+
+.amountCell {
+  background: #fefce8;
+  font-weight: 600;
+}
+
+.tdCenter {
+  text-align: center;
+  font-weight: 600;
+  color: #475569;
+}
+
+.tdRight {
+  text-align: right;
+  padding-right: 8px;
+}
+
+.sizeCalc {
+  display: block;
+  text-align: right;
+  color: #6b7280;
+  font-size: 10px;
+  padding-right: 4px;
+}
+
+/* tfoot rows */
+.tfootTotal td {
+  background: #f1f5f9;
+  padding: 7px 6px;
+  border-top: 2px solid #1e293b;
+}
+
+.totalAmt {
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.tfootBalance td {
+  background: #dcfce7;
+  padding: 7px 6px;
+  border-top: 1px solid #16a34a;
+}
+
+.balAmt {
+  font-size: 14px;
+  color: #16a34a;
+}
+
+.formulaNote {
+  margin: 10px 0 0 0;
+  font-size: 11px;
+  color: #6b7280;
+  padding: 8px;
+  background: #fafafa;
+  border-radius: 6px;
+  border: 1px dashed #d1d5db;
+}
+
+.inchToggleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #78350f;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.inchToggleRow input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #f59e0b;
+}

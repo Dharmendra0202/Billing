@@ -365,7 +365,7 @@ export function App() {
       </section>
 
       <AIChat header={header} tables={tables} onUpdate={handleAIUpdate} />
-      <BillScanner header={header} tables={tables} onUpdate={handleAIUpdate} />
+      <BillScanner header={header} onHeaderChange={setHeader} />
     </main>
   );
 }

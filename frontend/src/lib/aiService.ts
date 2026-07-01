@@ -277,36 +277,48 @@ Be helpful, concise, and accurate. Always explain what changes you're making.`;
     });
   }
 
-  // Extract structured bill data from image
+  // Extract structured bill data from image - with your exact column structure
   async extractBillFromImage(imageBase64: string): Promise<string> {
-    const extractionPrompt = `Analyze this bill/invoice image and extract all data in this exact JSON format:
+    const extractionPrompt = `You are a bill data extractor. Look at this bill/invoice image carefully and extract every row of data.
 
+The table in this bill has these columns:
+- Particulars (item name/description)
+- Size (measurements like length x width, or just a size value)
+- Rate (price per unit)
+- Amount (total for that item = size * rate)
+
+Extract ALL rows you can see. Number them starting from 1.
+
+Return ONLY this exact JSON, nothing else:
 {
-  "businessName": "Store/Business name",
-  "address": "Full address if visible",
-  "phone": "Phone number if visible",
-  "gstNumber": "GST/Tax number if visible",
   "items": [
     {
-      "name": "Item name",
-      "quantity": 1,
-      "unit": "kg/pcs/etc",
-      "rate": 100,
-      "amount": 100
+      "sr": 1,
+      "particulars": "exact item name from image",
+      "size": "exact size value like 10x12 or 5.50",
+      "rate": 150,
+      "amount": 1650
+    },
+    {
+      "sr": 2,
+      "particulars": "next item name",
+      "size": "size value",
+      "rate": 200,
+      "amount": 2000
     }
   ],
-  "subtotal": 1000,
-  "gst": 180,
-  "discount": 0,
-  "grandTotal": 1180
+  "total": 3650,
+  "advance": 0,
+  "balance": 3650
 }
 
-Rules:
-1. Extract ALL items you can see
-2. If quantity/rate not visible, estimate from amount
-3. Include GST/tax if shown
-4. Return ONLY valid JSON, no other text
-5. Use numbers (not strings) for numeric values`;
+Important rules:
+1. sr starts from 1 and increments by 1 for each row
+2. If size is not visible, put "1"
+3. If rate is not visible, put the amount value
+4. amount = size * rate (as a number)
+5. Extract EVERY row, do not skip any
+6. Return ONLY valid JSON, no explanation text`;
 
     return this.analyzeImage(imageBase64, extractionPrompt);
   }
