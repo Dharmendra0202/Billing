@@ -14,6 +14,14 @@ export function money(value: number) {
   }).format(Number.isFinite(value) ? value : 0);
 }
 
+export function formatNumber(value: number) {
+  return new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
+
 export function makeId(prefix: string) {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 }

@@ -1,5 +1,5 @@
 import type { BillDetails, HeaderTemplate } from "../types";
-import { money } from "../lib/billMath";
+import { money, formatNumber } from "../lib/billMath";
 import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
 
 type Row = {
@@ -7,8 +7,12 @@ type Row = {
   sr: number;
   particulars: string;
   size: string;
+  quantity: number;
   rate: number;
   amount: number;
+  bold?: boolean;
+  fontSize?: number;
+  align?: "left" | "center" | "right";
 };
 
 type Props = {
@@ -81,21 +85,22 @@ export function BillPreview({ header, rows, billDetails }: Props) {
       {/* Subject */}
       {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}
 
-      {/* Items Table — full 5 columns */}
+      {/* Items Table — full 6 columns */}
       <table className="pbTable">
         <thead>
           <tr>
             <th className="pbThSr">Sr. No</th>
             <th className="pbThParticulars">Particulars</th>
             <th className="pbThSize">Size</th>
-            <th className="pbThRate">Rate (₹)</th>
+            <th className="pbThQty">Quantity</th>
+            <th className="pbThRate">Rate</th>
             <th className="pbThAmt">Amount (₹)</th>
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={5} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
+              <td colSpan={6} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
                 No items yet — add rows in the center panel
               </td>
             </tr>
@@ -103,41 +108,46 @@ export function BillPreview({ header, rows, billDetails }: Props) {
           {rows.map(row => (
             <tr key={row.id}>
               <td className="pbSrCell">{row.sr}</td>
-              <td className="pbParticularsCell">
+              <td
+                className="pbParticularsCell"
+                style={{
+                  fontWeight: row.bold ? "bold" : "normal",
+                  fontSize: row.fontSize ? `${row.fontSize}px` : undefined,
+                  textAlign: row.align || "left"
+                }}
+              >
                 {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
               </td>
               <td className="pbSizeCell">
                 {row.size ? (() => {
-                  const { original, converted, value } = convertSizeDisplay(row.size);
+                  const { original, converted } = convertSizeDisplay(row.size);
                   return (
                     <>
                       <span className="pbSizeRaw">{original}</span>
                       {converted && (
                         <span className="pbSizeConverted">→ {converted}</span>
                       )}
-                      {row.size.match(/[x*×]/i) && (
-                        <span className="pbSizeCalc">= {value}</span>
-                      )}
                     </>
                   );
                 })() : <span style={{ color: "#bbb" }}>—</span>}
               </td>
-              <td className="pbRateCell">{row.rate > 0 ? money(row.rate) : "—"}</td>
+              <td className="pbQtyCell">{row.quantity || "—"}</td>
+              <td className="pbRateCell">{row.rate > 0 ? formatNumber(row.rate) : "—"}</td>
               <td className="pbAmtCell">{row.amount > 0 ? money(row.amount) : "—"}</td>
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="pbTfTotal">
-            <td colSpan={4} className="pbRight"><strong>Total</strong></td>
+            <td colSpan={5} className="pbRight"><strong>Total</strong></td>
             <td className="pbAmtCell"><strong>{money(total)}</strong></td>
           </tr>
           <tr className="pbTfAdvance">
-            <td colSpan={4} className="pbRight">Advance</td>
+            <td colSpan={5} className="pbRight">Advance</td>
             <td className="pbAmtCell">{money(billDetails.advance)}</td>
           </tr>
           <tr className="pbTfBalance">
-            <td colSpan={4} className="pbRight"><strong>Balance</strong></td>
+            <td colSpan={5} className="pbRight"><strong>Balance</strong></td>
             <td className="pbAmtCell" style={{ color: "#15803d", fontWeight: 700 }}>{money(balance)}</td>
           </tr>
         </tfoot>

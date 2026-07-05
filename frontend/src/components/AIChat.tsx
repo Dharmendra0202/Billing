@@ -12,6 +12,7 @@ type ColDef = {
   width?: number;
   locked?: boolean;
   isSize?: boolean;
+  isQuantity?: boolean;
   isRate?: boolean;
   isAmount?: boolean;
 };
@@ -29,10 +30,10 @@ function parseSize(val: string): number {
 }
 
 function computeAmount(row: EditorRow, cols: ColDef[]): number {
-  const sizeCol = cols.find(c => c.isSize);
+  const qtyCol = cols.find(c => c.isQuantity);
   const rateCol = cols.find(c => c.isRate);
-  if (!sizeCol || !rateCol) return 0;
-  return Math.round(parseSize(row.cells[sizeCol.id] || "") * (parseFloat(row.cells[rateCol.id] || "0") || 0) * 100) / 100;
+  if (!qtyCol || !rateCol) return 0;
+  return Math.round((parseFloat(row.cells[qtyCol.id] || "0") || 0) * (parseFloat(row.cells[rateCol.id] || "0") || 0) * 100) / 100;
 }
 
 function renumber(rows: EditorRow[]): EditorRow[] {
@@ -117,8 +118,15 @@ export function AIChat({
           const newCells: Record<string, string> = { sr: String(prev.length + 1) };
           cols.forEach(c => { newCells[c.id] = ""; });
           if (partCol)  newCells[partCol.id]  = data.particulars || "";
-          if (sizeCol)  newCells[sizeCol.id]  = String(data.size || "1");
+          if (sizeCol)  newCells[sizeCol.id]  = String(data.size || "");
+          const qtyCol = cols.find(c => c.isQuantity);
+          if (qtyCol) {
+            newCells[qtyCol.id] = String(data.quantity !== undefined ? data.quantity : parseSize(newCells[sizeCol?.id ?? ""]));
+          }
           if (rateCol)  newCells[rateCol.id]  = String(data.rate || "0");
+          newCells.bold = String(data.bold || false);
+          newCells.fontSize = String(data.fontSize || 11);
+          newCells.align = data.align || "left";
           const newRow: EditorRow = { id: uid(), cells: newCells };
           const next = [...prev, newRow];
           return recalcAmounts(next, cols);
@@ -132,8 +140,15 @@ export function AIChat({
             const cells: Record<string, string> = { sr: String(prev.length + i + 1) };
             cols.forEach(c => { cells[c.id] = ""; });
             if (partCol)  cells[partCol.id]  = item.particulars || "";
-            if (sizeCol)  cells[sizeCol.id]  = String(item.size || "1");
+            if (sizeCol)  cells[sizeCol.id]  = String(item.size || "");
+            const qtyCol = cols.find(c => c.isQuantity);
+            if (qtyCol) {
+              cells[qtyCol.id] = String(item.quantity !== undefined ? item.quantity : parseSize(cells[sizeCol?.id ?? ""]));
+            }
             if (rateCol)  cells[rateCol.id]  = String(item.rate || "0");
+            cells.bold = String(item.bold || false);
+            cells.fontSize = String(item.fontSize || 11);
+            cells.align = item.align || "left";
             return { id: uid(), cells };
           });
           return recalcAmounts(renumber([...prev, ...added]), cols);
@@ -147,8 +162,19 @@ export function AIChat({
             if (r.cells.sr !== String(data.sr)) return r;
             const next = { ...r, cells: { ...r.cells } };
             if (data.particulars !== undefined && partCol) next.cells[partCol.id] = String(data.particulars);
-            if (data.size        !== undefined && sizeCol) next.cells[sizeCol.id] = String(data.size);
+            if (data.size        !== undefined && sizeCol) {
+              next.cells[sizeCol.id] = String(data.size);
+              const qtyCol = cols.find(c => c.isQuantity);
+              if (qtyCol) next.cells[qtyCol.id] = String(parseSize(String(data.size)));
+            }
+            if (data.quantity    !== undefined) {
+              const qtyCol = cols.find(c => c.isQuantity);
+              if (qtyCol) next.cells[qtyCol.id] = String(data.quantity);
+            }
             if (data.rate        !== undefined && rateCol) next.cells[rateCol.id] = String(data.rate);
+            if (data.bold        !== undefined) next.cells.bold = String(data.bold);
+            if (data.fontSize    !== undefined) next.cells.fontSize = String(data.fontSize);
+            if (data.align       !== undefined) next.cells.align = String(data.align);
             return next;
           });
           return recalcAmounts(updated, cols);
@@ -180,7 +206,13 @@ export function AIChat({
 
       case "UPDATE_DETAIL": {
         const { field, value } = data;
-        onBillDetailsChange({ ...billDetails, [field]: field === "advance" ? (parseFloat(value) || 0) : value });
+        let parsedValue: any = value;
+        if (field === "advance") {
+          parsedValue = parseFloat(value) || 0;
+        } else if (field === "showNote" || field === "showSignature") {
+          parsedValue = value === true || value === "true";
+        }
+        onBillDetailsChange({ ...billDetails, [field]: parsedValue });
         break;
       }
 
@@ -321,7 +353,7 @@ DELETE_LAST_ROW:
 CLEAR_TABLE:
 { "action": "CLEAR_TABLE", "data": {}, "reply": "Table cleared." }
 
-UPDATE_DETAIL (fields: clientName, clientAddress, date, subject, advance, note, showNote, showSignature):
+UPDATE_DETAIL (fields: clientName, clientAddress, date, subject, advance, note, showNote, showSignature, proprietorName):
 { "action": "UPDATE_DETAIL", "data": { "field": "clientName", "value": "ABC Corp" }, "reply": "..." }
 
 UPDATE_HEADER (fields: businessName, phone, address, gstNumber, tagline):
@@ -340,7 +372,8 @@ APPLY_DISCOUNT:
 { "action": "APPLY_DISCOUNT", "data": { "percent": 10 }, "reply": "Applied 10% discount." }
 
 ## FORMULA RULES
-- Amount = parseSize(size) * rate
+- Quantity = parseSize(size) (if size is provided, set quantity to its calculation)
+- Amount = Quantity * Rate
 - parseSize("10x5") = 50, parseSize("3x4x2") = 24, parseSize("12") = 12
 - Total = SUM of all amount values
 - Balance = Total − advance

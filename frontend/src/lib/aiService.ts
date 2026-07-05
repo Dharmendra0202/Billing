@@ -292,7 +292,8 @@ CURRENT BILL DETAILS:
 ${JSON.stringify(currentDetails, null, 2)}
 
 FORMULAS (always apply these):
-- amount = parseSize(size) * rate
+- quantity = parseSize(size) (if size is provided, set quantity to its calculation)
+- amount = quantity * rate
 - parseSize handles "10x5" → 50, "10x5x3" → 150, plain "5.50" → 5.50
 - total = SUM of all amount values
 - balance = total - advance
@@ -320,7 +321,7 @@ DELETE_ROW → remove a row by sr number:
 { "action": "DELETE_ROW", "data": { "sr": 3 }, "reply": "Deleted row 3..." }
 
 UPDATE_DETAIL → change bill header details:
-{ "action": "UPDATE_DETAIL", "data": { "field": "clientName|clientAddress|date|subject|advance|note", "value": "new value" }, "reply": "Updated client name..." }
+{ "action": "UPDATE_DETAIL", "data": { "field": "clientName|clientAddress|date|subject|advance|note|showNote|showSignature|proprietorName", "value": "new value" }, "reply": "Updated client name..." }
 
 CLEAR_TABLE → remove all rows:
 { "action": "CLEAR_TABLE", "data": {}, "reply": "Table cleared." }
@@ -375,42 +376,46 @@ RULES:
 
 The table in this bill has these columns:
 - Particulars (item name/description)
-- Size (measurements like length x width, or just a size value)
+- Size (measurements like length x width, e.g. "6.66 × 4.66" or "—")
+- Quantity / Area (numeric quantity or area, e.g. "31.00", "3", "16.00", "1". Strip unit suffixes like "Sq.ft", "Nos", "No" and extract only the number)
 - Rate (price per unit)
-- Amount (total for that item = size * rate)
+- Amount (total for that item = quantity * rate)
 
 Extract ALL rows you can see. Number them starting from 1.
 
-Return ONLY this exact JSON, nothing else:
+Return ONLY this exact JSON structure, nothing else:
 {
   "items": [
     {
       "sr": 1,
-      "particulars": "exact item name from image",
-      "size": "exact size value like 10x12 or 5.50",
-      "rate": 150,
-      "amount": 1650
+      "particulars": "exact item name from image (e.g. Cupboard)",
+      "size": "exact size string from image (e.g. 6.66 x 4.66, or empty if dash)",
+      "quantity": 31.00,
+      "rate": 525,
+      "amount": 16275
     },
     {
       "sr": 2,
-      "particulars": "next item name",
-      "size": "size value",
-      "rate": 200,
-      "amount": 2000
+      "particulars": "Entry Drawer",
+      "size": "",
+      "quantity": 3,
+      "rate": 1500,
+      "amount": 4500
     }
   ],
-  "total": 3650,
+  "total": 20775,
   "advance": 0,
-  "balance": 3650
+  "balance": 20775
 }
 
 Important rules:
 1. sr starts from 1 and increments by 1 for each row
-2. If size is not visible, put "1"
-3. If rate is not visible, put the amount value
-4. amount = size * rate (as a number)
-5. Extract EVERY row, do not skip any
-6. Return ONLY valid JSON, no explanation text`;
+2. Extract size exactly as written (e.g. "6.66 x 4.66" or similar, or empty string "" if it is a dash or not present)
+3. quantity should be a clean number (e.g. 31.00 or 3). Strip all text like "Sq.ft", "Nos", "No", etc.
+4. rate should be a clean number.
+5. amount should be a clean number.
+6. Extract EVERY row, do not skip any.
+7. Return ONLY valid JSON, no explanation text`;
 
     return this.analyzeImage(imageBase64, extractionPrompt);
   }

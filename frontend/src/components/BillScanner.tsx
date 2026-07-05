@@ -16,8 +16,12 @@ type ScannedRow = {
   sr: number;
   particulars: string;
   size: string;
+  quantity: number;
   rate: number;
   amount: number;
+  bold?: boolean;
+  fontSize?: number;
+  align?: "left" | "center" | "right";
 };
 
 type ChatMsg = {
@@ -31,11 +35,11 @@ function parseSize(size: string): number {
   const clean = size.trim();
   const parts = clean.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
   if (parts.length >= 2) return parts.reduce((a, b) => a * b, 1);
-  return parseFloat(clean) || 0;
+  return parseFloat(clean) || 1;
 }
 
-function calcAmount(size: string, rate: number): number {
-  return Math.round(parseSize(size) * rate * 100) / 100;
+function calcAmount(quantity: number, rate: number): number {
+  return Math.round(quantity * rate * 100) / 100;
 }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
@@ -65,7 +69,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
 
   // table rows
   const [rows, setRows] = useState<ScannedRow[]>([
-    { id: uid(), sr: 1, particulars: "", size: "1", rate: 0, amount: 0 }
+    { id: uid(), sr: 1, particulars: "", size: "1", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }
   ]);
 
   // bill details
@@ -117,11 +121,32 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
       if (!data.items?.length) { setScanStatus("⚠️ No items found. Try a clearer image."); return; }
 
       const newRows: ScannedRow[] = data.items.map((item: any, idx: number) => {
-        let sizeStr = String(item.size ?? item.quantity ?? "1");
-        if (applyInchConversion) sizeStr = convertAllPointValues(sizeStr);
+        let sizeStr = String(item.size ?? "");
+        if (sizeStr === "—" || sizeStr === "null" || sizeStr === "undefined") {
+          sizeStr = "";
+        }
+        if (sizeStr && applyInchConversion) {
+          sizeStr = convertAllPointValues(sizeStr);
+        }
+        
+        let qty = 1;
+        if (item.quantity !== undefined && item.quantity !== null && item.quantity !== "") {
+          qty = parseFloat(item.quantity) || 1;
+        } else if (sizeStr) {
+          qty = parseSize(sizeStr);
+        }
+        
         const rate   = parseFloat(item.rate)   || 0;
-        const amount = parseFloat(item.amount) || calcAmount(sizeStr, rate);
-        return { id: uid(), sr: item.sr ?? idx + 1, particulars: String(item.particulars ?? item.name ?? ""), size: sizeStr, rate, amount };
+        const amount = parseFloat(item.amount) || calcAmount(qty, rate);
+        return {
+          id: uid(),
+          sr: item.sr ?? idx + 1,
+          particulars: String(item.particulars ?? item.name ?? ""),
+          size: sizeStr,
+          quantity: qty,
+          rate,
+          amount
+        };
       });
 
       setRows(newRows);
@@ -144,12 +169,13 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
       case "ADD_ROW": {
         setRows(prev => {
           const size = String(data.size || "1");
+          const qty = data.quantity !== undefined ? parseFloat(data.quantity) || 0 : parseSize(size);
           const rate = parseFloat(data.rate) || 0;
           const newRow: ScannedRow = {
             id: uid(), sr: prev.length + 1,
             particulars: data.particulars || "",
-            size, rate,
-            amount: data.amount || calcAmount(size, rate)
+            size, quantity: qty, rate,
+            amount: data.amount !== undefined ? parseFloat(data.amount) || 0 : calcAmount(qty, rate)
           };
           return [...prev, newRow];
         });
@@ -159,8 +185,17 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
         setRows(prev => {
           const added = (data.rows || []).map((item: any, i: number) => {
             const size = String(item.size || "1");
+            const qty = item.quantity !== undefined ? parseFloat(item.quantity) || 0 : parseSize(size);
             const rate = parseFloat(item.rate) || 0;
-            return { id: uid(), sr: prev.length + i + 1, particulars: item.particulars || "", size, rate, amount: item.amount || calcAmount(size, rate) };
+            return {
+              id: uid(),
+              sr: prev.length + i + 1,
+              particulars: item.particulars || "",
+              size,
+              quantity: qty,
+              rate,
+              amount: item.amount !== undefined ? parseFloat(item.amount) || 0 : calcAmount(qty, rate)
+            };
           });
           return renumber([...prev, ...added]);
         });
@@ -171,9 +206,13 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
           if (r.sr !== data.sr) return r;
           const updated = { ...r };
           if (data.particulars !== undefined) updated.particulars = String(data.particulars);
-          if (data.size        !== undefined) updated.size        = String(data.size);
-          if (data.rate        !== undefined) updated.rate        = parseFloat(data.rate) || 0;
-          updated.amount = data.amount || calcAmount(updated.size, updated.rate);
+          if (data.size        !== undefined) {
+            updated.size = String(data.size);
+            updated.quantity = parseSize(updated.size);
+          }
+          if (data.quantity    !== undefined) updated.quantity = parseFloat(data.quantity) || 0;
+          if (data.rate        !== undefined) updated.rate = parseFloat(data.rate) || 0;
+          updated.amount = data.amount !== undefined ? parseFloat(data.amount) || 0 : calcAmount(updated.quantity, updated.rate);
           return updated;
         })));
         break;
@@ -184,18 +223,24 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
       }
       case "UPDATE_DETAIL": {
         const { field, value } = data;
-        setBillDetails(prev => ({ ...prev, [field]: field === "advance" ? (parseFloat(value) || 0) : value }));
+        let parsedValue: any = value;
+        if (field === "advance") {
+          parsedValue = parseFloat(value) || 0;
+        } else if (field === "showNote" || field === "showSignature") {
+          parsedValue = value === true || value === "true";
+        }
+        setBillDetails(prev => ({ ...prev, [field]: parsedValue }));
         break;
       }
       case "CLEAR_TABLE": {
-        setRows([{ id: uid(), sr: 1, particulars: "", size: "1", rate: 0, amount: 0 }]);
+        setRows([{ id: uid(), sr: 1, particulars: "", size: "1", quantity: 1, rate: 0, amount: 0 }]);
         break;
       }
       case "APPLY_GST": {
         const pct = parseFloat(data.percent) || 18;
         setRows(prev => {
           const gstAmt = Math.round(prev.reduce((s, r) => s + r.amount, 0) * pct) / 100;
-          return renumber([...prev, { id: uid(), sr: prev.length + 1, particulars: `GST @ ${pct}%`, size: "1", rate: gstAmt, amount: gstAmt }]);
+          return renumber([...prev, { id: uid(), sr: prev.length + 1, particulars: `GST @ ${pct}%`, size: "1", quantity: 1, rate: gstAmt, amount: gstAmt }]);
         });
         break;
       }
@@ -203,7 +248,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
         const pct = parseFloat(data.percent) || 10;
         setRows(prev => {
           const discAmt = -Math.round(prev.reduce((s, r) => s + r.amount, 0) * pct) / 100;
-          return renumber([...prev, { id: uid(), sr: prev.length + 1, particulars: `Discount @ ${pct}%`, size: "1", rate: discAmt, amount: discAmt }]);
+          return renumber([...prev, { id: uid(), sr: prev.length + 1, particulars: `Discount @ ${pct}%`, size: "1", quantity: 1, rate: discAmt, amount: discAmt }]);
         });
         break;
       }
@@ -248,16 +293,46 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     setRows(prev => prev.map(r => {
       if (r.id !== id) return r;
       const next = { ...r, [field]: (field === "particulars" || field === "size") ? raw : (parseFloat(raw) || 0) };
-      if (field === "size" || field === "rate") next.amount = calcAmount(next.size, next.rate);
+      if (field === "size") {
+        next.quantity = parseSize(next.size);
+      }
+      if (field === "size" || field === "quantity" || field === "rate") {
+        next.amount = calcAmount(next.quantity, next.rate);
+      }
       return next;
     }));
   };
 
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+
+  const toggleBold = () => {
+    if (!selectedRowId) return;
+    setRows(prev => prev.map(r => r.id === selectedRowId ? { ...r, bold: !r.bold } : r));
+  };
+
+  const adjustFontSize = (delta: number) => {
+    if (!selectedRowId) return;
+    setRows(prev => prev.map(r => {
+      if (r.id !== selectedRowId) return r;
+      const currentSize = r.fontSize || 11;
+      const newSize = Math.max(8, Math.min(24, currentSize + delta));
+      return { ...r, fontSize: newSize };
+    }));
+  };
+
+  const changeAlignment = (alignment: "left" | "center" | "right") => {
+    if (!selectedRowId) return;
+    setRows(prev => prev.map(r => r.id === selectedRowId ? { ...r, align: alignment } : r));
+  };
+
   const addRow = () => setRows(prev =>
-    [...prev, { id: uid(), sr: prev.length + 1, particulars: "", size: "1", rate: 0, amount: 0 }]
+    [...prev, { id: uid(), sr: prev.length + 1, particulars: "", size: "1", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }]
   );
 
-  const deleteRow = (id: string) => setRows(prev => renumber(prev.filter(r => r.id !== id)));
+  const deleteRow = (id: string) => {
+    setRows(prev => renumber(prev.filter(r => r.id !== id)));
+    if (selectedRowId === id) setSelectedRowId(null);
+  };
 
   // ── export ────────────────────────────────────────────────────────────────────
   const toBillTable = () => [{
@@ -266,12 +341,23 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
       { id: "sr",          label: "Sr. No",      kind: "number" as const },
       { id: "particulars", label: "Particulars", kind: "text"   as const },
       { id: "size",        label: "Size",        kind: "text"   as const },
+      { id: "quantity",    label: "Quantity",    kind: "number" as const },
       { id: "rate",        label: "Rate",        kind: "number" as const },
       { id: "amount",      label: "Amount",      kind: "number" as const }
     ],
     rows: rows.map(r => ({
       id: r.id,
-      cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, rate: String(r.rate), amount: String(r.amount) }
+      cells: {
+        sr: String(r.sr),
+        particulars: r.particulars,
+        size: r.size,
+        quantity: String(r.quantity),
+        rate: String(r.rate),
+        amount: String(r.amount),
+        bold: String(r.bold || false),
+        fontSize: String(r.fontSize || 11),
+        align: r.align || "left"
+      }
     }))
   }];
 
@@ -409,12 +495,67 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                 <span>Signature</span>
               </label>
             </div>
+            {(billDetails.showNote || billDetails.showSignature) && (
+              <div className="detailsRow" style={{ marginTop: 8 }}>
+                {billDetails.showNote && (
+                  <label>Note Text
+                    <textarea value={billDetails.note}
+                      onChange={e => setBillDetails({ ...billDetails, note: e.target.value })}
+                      placeholder="GST 18% will be provided by the client."
+                      rows={2}
+                      className="cellTextarea"
+                      style={{ minHeight: 45, resize: "vertical" }} />
+                  </label>
+                )}
+                {billDetails.showSignature && (
+                  <label>Proprietor Name
+                    <input type="text" value={billDetails.proprietorName}
+                      onChange={e => setBillDetails({ ...billDetails, proprietorName: e.target.value })}
+                      placeholder="Mr. Dharmendra Vishwakarma" />
+                  </label>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 4. Live Table */}
           <div className="scannerSection">
             <div className="sectionHeader">
               <h4>4️⃣ Items Table</h4>
+
+              <div className="tableFormattingToolbar" style={{ margin: "0 auto 0 16px" }}>
+                <button 
+                  className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.bold ? 'active' : ''}`}
+                  onClick={toggleBold}
+                  disabled={!selectedRowId}
+                  title="Bold (Ctrl+B)"
+                >
+                  <strong>B</strong>
+                </button>
+                
+                <div className="fontSizeControls">
+                  <button onClick={() => adjustFontSize(-1)} disabled={!selectedRowId} title="Decrease Font Size">-</button>
+                  <span className="fontSizeDisplay">
+                    {selectedRowId ? (rows.find(r => r.id === selectedRowId)?.fontSize || 11) : 11}px
+                  </span>
+                  <button onClick={() => adjustFontSize(1)} disabled={!selectedRowId} title="Increase Font Size">+</button>
+                </div>
+                
+                <div className="alignmentControls">
+                  {(["left", "center", "right"] as const).map(alignVal => (
+                    <button
+                      key={alignVal}
+                      className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.align === alignVal ? 'active' : ''}`}
+                      onClick={() => changeAlignment(alignVal)}
+                      disabled={!selectedRowId}
+                      title={`Align ${alignVal}`}
+                    >
+                      {alignVal === "left" ? "L" : alignVal === "center" ? "C" : "R"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <button className="primaryButton compact" onClick={addRow}>
                 <Plus size={13} /> Add Row
               </button>
@@ -427,33 +568,49 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                     <th style={{ width: 32 }}>Sr</th>
                     <th>Particulars</th>
                     <th style={{ width: 86 }}>Size</th>
-                    <th style={{ width: 78 }}>Rate ₹</th>
+                    <th style={{ width: 70 }}>Qty</th>
+                    <th style={{ width: 78 }}>Rate</th>
                     <th style={{ width: 88 }}>Amount ₹</th>
                     <th style={{ width: 28 }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map(row => (
-                    <tr key={row.id}>
-                      <td className="tdCenter">{row.sr}</td>
+                    <tr key={row.id} style={{ background: selectedRowId === row.id ? "#f8fafc" : undefined }}>
+                      <td className="tdCenter" onFocus={() => setSelectedRowId(row.id)}>{row.sr}</td>
                       <td>
                         <textarea className="cellTextarea" value={row.particulars} rows={2}
                           onChange={e => updateRow(row.id, "particulars", e.target.value)}
-                          placeholder="Item description…" />
+                          placeholder="Item description…"
+                          onFocus={() => setSelectedRowId(row.id)}
+                          style={{
+                            fontWeight: row.bold ? "bold" : "normal",
+                            fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
+                            textAlign: row.align || "left"
+                          }} />
                       </td>
                       <td>
                         <input className="cellInput" type="text" value={row.size}
                           onChange={e => updateRow(row.id, "size", e.target.value)}
-                          placeholder="e.g. 10x5" />
+                          placeholder="e.g. 10x5"
+                          onFocus={() => setSelectedRowId(row.id)} />
                         {parseSize(row.size) > 0 && (
                           <small className="sizeCalc">= {parseSize(row.size)}</small>
                         )}
                       </td>
                       <td>
                         <input className="cellInput cellRight" type="number"
+                          value={row.quantity || ""}
+                          onChange={e => updateRow(row.id, "quantity", e.target.value)}
+                          placeholder="0"
+                          onFocus={() => setSelectedRowId(row.id)} />
+                      </td>
+                      <td>
+                        <input className="cellInput cellRight" type="number"
                           value={row.rate || ""}
                           onChange={e => updateRow(row.id, "rate", e.target.value)}
-                          placeholder="0" />
+                          placeholder="0"
+                          onFocus={() => setSelectedRowId(row.id)} />
                       </td>
                       <td>
                         <input className="cellInput cellRight amountCell" type="number"
@@ -461,7 +618,8 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                           onChange={e => setRows(prev => prev.map(r =>
                             r.id === row.id ? { ...r, amount: parseFloat(e.target.value) || 0 } : r
                           ))}
-                          placeholder="0" />
+                          placeholder="0"
+                          onFocus={() => setSelectedRowId(row.id)} />
                       </td>
                       <td>
                         <button className="miniButton danger" onClick={() => deleteRow(row.id)}
@@ -474,12 +632,12 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                 </tbody>
                 <tfoot>
                   <tr className="tfootTotal">
-                    <td colSpan={4} className="tdRight"><strong>Total (SUM)</strong></td>
+                    <td colSpan={5} className="tdRight"><strong>Total (SUM)</strong></td>
                     <td className="tdRight totalAmt"><strong>₹ {total.toLocaleString("en-IN")}</strong></td>
                     <td></td>
                   </tr>
                   <tr>
-                    <td colSpan={4} className="tdRight">Advance</td>
+                    <td colSpan={5} className="tdRight">Advance</td>
                     <td className="tdRight">
                       <input className="cellInput cellRight" type="number"
                         value={billDetails.advance || ""}
@@ -489,7 +647,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                     <td></td>
                   </tr>
                   <tr className="tfootBalance">
-                    <td colSpan={4} className="tdRight"><strong>Balance (Total − Advance)</strong></td>
+                    <td colSpan={5} className="tdRight"><strong>Balance (Total − Advance)</strong></td>
                     <td className="tdRight balAmt"><strong>₹ {balance.toLocaleString("en-IN")}</strong></td>
                     <td></td>
                   </tr>
@@ -497,7 +655,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
               </table>
             </div>
             <p className="formulaNote">
-              💡 Amount = Size × Rate (auto). Balance = Total − Advance (auto).
+              💡 Amount = Quantity × Rate (auto). Balance = Total − Advance (auto).
               Use the <strong>AI tab</strong> to edit with natural language.
             </p>
           </div>

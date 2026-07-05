@@ -466,6 +466,14 @@ const formatIndianCurrency = (amount: number): string => {
   return `₹ ${amount.toLocaleString('en-IN')}`;
 };
 
+const formatPDFCurrency = (amount: number): string => {
+  return `Rs. ${amount.toLocaleString('en-IN')}`;
+};
+
+const formatIndianNumber = (amount: number): string => {
+  return amount.toLocaleString('en-IN');
+};
+
 export async function exportProfessionalPDF(
   header: HeaderTemplate,
   tables: BillTable[],
@@ -540,8 +548,28 @@ export async function exportProfessionalPDF(
   yPos += 12;
 
   // Table
-  const colWidths = [25, pageWidth - 2 * margin - 60, 35];
-  const tableStartY = yPos;
+  const colWidths = [15, pageWidth - 2 * margin - 110, 25, 20, 20, 30];
+  const colX = [
+    margin + 2, // Sr. No
+    margin + colWidths[0] + 2, // Particulars
+    margin + colWidths[0] + colWidths[1] + 2, // Size
+    margin + colWidths[0] + colWidths[1] + colWidths[2] + 2, // Quantity
+    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + 2, // Rate
+    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + 2 // Amount
+  ];
+  
+  // Calculate vertical line X coordinates
+  const verticalX = [
+    margin,
+    margin + colWidths[0],
+    margin + colWidths[0] + colWidths[1],
+    margin + colWidths[0] + colWidths[1] + colWidths[2],
+    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3],
+    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4],
+    pageWidth - margin
+  ];
+
+  const tableStartY = yPos - 4;
   
   // Table header
   doc.setFillColor(245, 245, 245);
@@ -549,52 +577,101 @@ export async function exportProfessionalPDF(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   
-  doc.text("Sr. No", margin + 2, yPos);
-  doc.text("Particulars", margin + colWidths[0] + 2, yPos);
-  doc.text("Amount", margin + colWidths[0] + colWidths[1] + 2, yPos);
+  doc.text("Sr. No", margin + colWidths[0] / 2, yPos, { align: "center" });
+  doc.text("Particulars", margin + colWidths[0] + 2, yPos, { align: "left" });
+  doc.text("Size", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yPos, { align: "center" });
+  doc.text("Qty", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yPos, { align: "center" });
+  doc.text("Rate", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yPos, { align: "right" });
+  doc.text("Amount (Rs.)", pageWidth - margin - 2, yPos, { align: "right" });
   
-  // Table lines
+  // Draw header top and bottom lines
   doc.setDrawColor(0);
+  doc.setLineWidth(0.5);
   doc.line(margin, yPos - 4, pageWidth - margin, yPos - 4);
   doc.line(margin, yPos + 4, pageWidth - margin, yPos + 4);
   
   yPos += 10;
 
   // Table rows
-  doc.setFont("helvetica", "normal");
   mainTable?.rows.forEach((row, index) => {
     const particulars = row.cells.particulars || "";
+    const size = row.cells.size || "";
+    const quantity = parseFloat(row.cells.quantity) || 0;
+    const rate = parseFloat(row.cells.rate) || 0;
     const amount = parseFloat(row.cells.amount) || 0;
+    
+    const isBold = row.cells.bold === "true";
+    const fontSize = parseInt(row.cells.fontSize) || 11;
+    const align = (row.cells.align as any) || "left";
+    
+    // Set custom font for particulars
+    doc.setFont("helvetica", isBold ? "bold" : "normal");
+    doc.setFontSize(fontSize);
     
     // Handle multi-line particulars
     const lines = doc.splitTextToSize(particulars, colWidths[1] - 4);
-    const rowHeight = Math.max(lines.length * 5, 8);
+    const rowHeight = Math.max(lines.length * (fontSize * 0.45), 8);
     
-    doc.text(String(row.cells.sr || index + 1), margin + 2, yPos);
-    doc.text(lines, margin + colWidths[0] + 2, yPos);
-    doc.text(formatIndianCurrency(amount), margin + colWidths[0] + colWidths[1] + 2, yPos);
+    doc.text(String(row.cells.sr || index + 1), margin + colWidths[0] / 2, yPos, { align: "center" });
+    
+    // Align particulars correctly
+    const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
+    const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
+    doc.text(lines, drawX, yPos, { align: alignOpt });
+
+    // Reset font style for the other cells in the row
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    
+    doc.text(size || "—", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yPos, { align: "center" });
+    doc.text(quantity > 0 ? String(quantity) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yPos, { align: "center" });
+    doc.text(rate > 0 ? formatIndianNumber(rate) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yPos, { align: "right" });
+    doc.text(amount > 0 ? formatPDFCurrency(amount) : "—", pageWidth - margin - 2, yPos, { align: "right" });
     
     yPos += rowHeight + 2;
+    // Draw horizontal grid line below the row
+    doc.line(margin, yPos - 6, pageWidth - margin, yPos - 6);
   });
 
-  // Totals
+  const tableEndY = yPos - 6;
+
+  // Draw vertical grid lines for the items table
+  verticalX.forEach(x => {
+    doc.line(x, tableStartY, x, tableEndY);
+  });
+
+  // Totals Section
+  yPos = tableEndY;
+  
+  // Total Row
+  yPos += 6;
   doc.setFont("helvetica", "bold");
-  doc.line(margin, yPos, pageWidth - margin, yPos);
+  doc.text("Total", verticalX[5] - 2, yPos, { align: "right" });
+  doc.text(formatPDFCurrency(total), pageWidth - margin - 2, yPos, { align: "right" });
+  doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
+  
+  // Advance Row
   yPos += 6;
+  doc.setFont("helvetica", "normal");
+  doc.text("Advance", verticalX[5] - 2, yPos, { align: "right" });
+  doc.text(formatPDFCurrency(billDetails.advance), pageWidth - margin - 2, yPos, { align: "right" });
+  doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
   
-  doc.text("Total", margin + colWidths[0] + colWidths[1] - 20, yPos);
-  doc.text(formatIndianCurrency(total), margin + colWidths[0] + colWidths[1] + 2, yPos);
+  // Balance Row
   yPos += 6;
-  
-  doc.text("Advance", margin + colWidths[0] + colWidths[1] - 20, yPos);
-  doc.text(formatIndianCurrency(billDetails.advance), margin + colWidths[0] + colWidths[1] + 2, yPos);
-  yPos += 6;
-  
-  doc.text("Balance", margin + colWidths[0] + colWidths[1] - 20, yPos);
-  doc.text(formatIndianCurrency(balance), margin + colWidths[0] + colWidths[1] + 2, yPos);
-  
-  doc.line(margin, yPos + 4, pageWidth - margin, yPos + 4);
-  yPos += 20;
+  doc.setFont("helvetica", "bold");
+  doc.text("Balance", verticalX[5] - 2, yPos, { align: "right" });
+  doc.text(formatPDFCurrency(balance), pageWidth - margin - 2, yPos, { align: "right" });
+  doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
+
+  const totalsEndY = yPos + 2;
+
+  // Draw vertical borders around Totals section
+  doc.line(margin, tableEndY, margin, totalsEndY); // Left border
+  doc.line(pageWidth - margin, tableEndY, pageWidth - margin, totalsEndY); // Right border
+  doc.line(verticalX[5], tableEndY, verticalX[5], totalsEndY); // Divider before Amount column
+
+  yPos = totalsEndY + 12;
 
   // Note
   if (billDetails.showNote && billDetails.note) {
@@ -647,21 +724,24 @@ export async function exportProfessionalExcel(
   wsData.push([]);
 
   // Table header
-  wsData.push(["Sr. No", "Particulars", "Amount"]);
+  wsData.push(["Sr. No", "Particulars", "Size", "Quantity", "Rate", "Amount (₹)"]);
 
   // Table rows
   mainTable?.rows.forEach((row, index) => {
     wsData.push([
       row.cells.sr || String(index + 1),
       row.cells.particulars || "",
+      row.cells.size || "",
+      parseFloat(row.cells.quantity) || 0,
+      parseFloat(row.cells.rate) || 0,
       parseFloat(row.cells.amount) || 0
     ]);
   });
 
   // Totals
-  wsData.push(["", "Total", total]);
-  wsData.push(["", "Advance", billDetails.advance]);
-  wsData.push(["", "Balance", balance]);
+  wsData.push(["", "", "", "", "Total", total]);
+  wsData.push(["", "", "", "", "Advance", billDetails.advance]);
+  wsData.push(["", "", "", "", "Balance", balance]);
   wsData.push([]);
 
   // Note
@@ -678,7 +758,7 @@ export async function exportProfessionalExcel(
   }
 
   const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws["!cols"] = [{ wch: 10 }, { wch: 60 }, { wch: 15 }];
+  ws["!cols"] = [{ wch: 10 }, { wch: 45 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 15 }];
   
   XLSX.utils.book_append_sheet(wb, ws, "Bill");
   XLSX.writeFile(wb, `${filename}.xlsx`);
@@ -759,21 +839,52 @@ export async function exportProfessionalWord(
   tableRows.push(
     new TableRow({
       children: [
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Sr. No", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Particulars", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 70, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 20, type: WidthType.PERCENTAGE } })
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Sr. No", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Particulars", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Size", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Quantity", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Rate", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount (₹)", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
       ]
     })
   );
 
   // Data rows
   mainTable?.rows.forEach((row, index) => {
+    const qtyVal = parseFloat(row.cells.quantity) || 0;
+    const rateVal = parseFloat(row.cells.rate) || 0;
+    const amtVal = parseFloat(row.cells.amount) || 0;
+    
+    const isBold = row.cells.bold === "true";
+    const fontSize = parseInt(row.cells.fontSize) || 11;
+    const align = (row.cells.align as any) || "left";
+    
+    let wordAlign: any = AlignmentType.LEFT;
+    if (align === "center") wordAlign = AlignmentType.CENTER;
+    if (align === "right") wordAlign = AlignmentType.RIGHT;
+    
     tableRows.push(
       new TableRow({
         children: [
           new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] }),
-          new TableCell({ children: [new Paragraph({ text: row.cells.particulars || "" })] }),
-          new TableCell({ children: [new Paragraph({ text: formatIndianCurrency(parseFloat(row.cells.amount) || 0), alignment: AlignmentType.RIGHT })] })
+          new TableCell({
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: row.cells.particulars || "",
+                    bold: isBold,
+                    size: fontSize * 2
+                  })
+                ],
+                alignment: wordAlign
+              })
+            ]
+          }),
+          new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
+          new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? String(qtyVal) : "—", alignment: AlignmentType.RIGHT })] }),
+          new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? formatIndianNumber(rateVal) : "—", alignment: AlignmentType.RIGHT })] }),
+          new TableCell({ children: [new Paragraph({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", alignment: AlignmentType.RIGHT })] })
         ]
       })
     );
@@ -783,6 +894,9 @@ export async function exportProfessionalWord(
   tableRows.push(
     new TableRow({
       children: [
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
         new TableCell({ children: [new Paragraph({ text: "" })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Total", bold: true })], alignment: AlignmentType.RIGHT })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatIndianCurrency(total), bold: true })], alignment: AlignmentType.RIGHT })] })
@@ -794,6 +908,9 @@ export async function exportProfessionalWord(
     new TableRow({
       children: [
         new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Advance", bold: true })], alignment: AlignmentType.RIGHT })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatIndianCurrency(billDetails.advance), bold: true })], alignment: AlignmentType.RIGHT })] })
       ]
@@ -803,6 +920,9 @@ export async function exportProfessionalWord(
   tableRows.push(
     new TableRow({
       children: [
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
         new TableCell({ children: [new Paragraph({ text: "" })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Balance", bold: true })], alignment: AlignmentType.RIGHT })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: formatIndianCurrency(balance), bold: true })], alignment: AlignmentType.RIGHT })] })

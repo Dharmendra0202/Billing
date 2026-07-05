@@ -10,8 +10,8 @@ import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord 
 import { convertAllPointValues } from "./lib/inchConversion";
 import type { BillDetails, BillTable, HeaderTemplate } from "./types";
 
-// Convert editor rows → BillTable for export (all 5 columns)
-function toBillTable(rows: Array<{ id: string; sr: number; particulars: string; size: string; rate: number; amount: number }>): BillTable {
+// Convert editor rows → BillTable for export (all 6 columns)
+function toBillTable(rows: EditorRow[]): BillTable {
   return {
     id: "table-main",
     title: "Bill Items",
@@ -19,6 +19,7 @@ function toBillTable(rows: Array<{ id: string; sr: number; particulars: string; 
       { id: "sr",          label: "Sr. No",      kind: "number" },
       { id: "particulars", label: "Particulars", kind: "text"   },
       { id: "size",        label: "Size",        kind: "text"   },
+      { id: "quantity",    label: "Quantity",    kind: "number" },
       { id: "rate",        label: "Rate",        kind: "number" },
       { id: "amount",      label: "Amount",      kind: "number" }
     ],
@@ -28,21 +29,34 @@ function toBillTable(rows: Array<{ id: string; sr: number; particulars: string; 
         sr:          String(r.sr),
         particulars: r.particulars,
         size:        r.size,
+        quantity:    String(r.quantity),
         rate:        String(r.rate),
-        amount:      String(r.amount)
+        amount:      String(r.amount),
+        bold:        String(r.bold || false),
+        fontSize:    String(r.fontSize || 11),
+        align:       r.align || "left"
       }
     }))
   };
 }
 
 // ── Inline table row type for center panel ──────────────────────────────────
-type EditorRow = { id: string; sr: number; particulars: string; size: string; rate: number; amount: number };
+type EditorRow = {
+  id: string;
+  sr: number;
+  particulars: string;
+  size: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+  bold?: boolean;
+  fontSize?: number;
+  align?: "left" | "center" | "right";
+};
 
 function recalc(rows: EditorRow[]): EditorRow[] {
   return rows.map((r, i) => {
-    const parsed = parseSize(r.size);
-    // always recalculate amount from size × rate (0 if either is empty/zero)
-    const amt = Math.round(parsed * r.rate * 100) / 100;
+    const amt = Math.round(r.quantity * r.rate * 100) / 100;
     return { ...r, sr: i + 1, amount: amt };
   });
 }
@@ -71,7 +85,7 @@ function parseSize(size: string): number {
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
 const defaultRows = (): EditorRow[] => [
-  { id: uid(), sr: 1, particulars: "", size: "", rate: 0, amount: 0 }
+  { id: uid(), sr: 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }
 ];
 
 export function App() {
@@ -125,13 +139,41 @@ export function App() {
   };
 
   const addRow = () => {
-    setRows(prev => [...prev, { id: uid(), sr: prev.length + 1, particulars: "", size: "", rate: 0, amount: 0 }]);
+    setRows(prev => [...prev, { id: uid(), sr: prev.length + 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }]);
+  };
+
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+
+  const toggleBold = () => {
+    if (!selectedRowId) return;
+    setRows(prev => prev.map(r => r.id === selectedRowId ? { ...r, bold: !r.bold } : r));
+  };
+
+  const adjustFontSize = (delta: number) => {
+    if (!selectedRowId) return;
+    setRows(prev => prev.map(r => {
+      if (r.id !== selectedRowId) return r;
+      const currentSize = r.fontSize || 11;
+      const newSize = Math.max(8, Math.min(24, currentSize + delta));
+      return { ...r, fontSize: newSize };
+    }));
+  };
+
+  const changeAlignment = (alignment: "left" | "center" | "right") => {
+    if (!selectedRowId) return;
+    setRows(prev => prev.map(r => r.id === selectedRowId ? { ...r, align: alignment } : r));
   };
 
   const updateRow = (id: string, field: keyof EditorRow, value: string | number) => {
     setRows(prev => {
-      const updated = prev.map(r => r.id === id ? { ...r, [field]: value } : r);
-      // only recalc amount from size×rate when size or rate changes, not when amount itself is edited
+      const updated = prev.map(r => {
+        if (r.id !== id) return r;
+        const next = { ...r, [field]: value };
+        if (field === "size") {
+          next.quantity = parseSize(next.size);
+        }
+        return next;
+      });
       if (field === "amount") return updated.map((r, i) => ({ ...r, sr: i + 1 }));
       return recalc(updated);
     });
@@ -139,6 +181,7 @@ export function App() {
 
   const deleteRow = (id: string) => {
     setRows(prev => recalc(prev.filter(r => r.id !== id)));
+    if (selectedRowId === id) setSelectedRowId(null);
   };
 
   const handleAIUpdate = (newHeader: HeaderTemplate, newTables: BillTable[]) => {
@@ -239,10 +282,16 @@ export function App() {
               <textarea value={billDetails.note} onChange={e => updateDetail("note", e.target.value)} style={{ minHeight: 54 }} />
             </label>
           )}
-          <label className="toggleRow" style={{ marginBottom: 0 }}>
+          <label className="toggleRow" style={{ marginBottom: billDetails.showSignature ? 8 : 0 }}>
             <input type="checkbox" checked={billDetails.showSignature} onChange={e => updateDetail("showSignature", e.target.checked)} />
             Show Signature section
           </label>
+          {billDetails.showSignature && (
+            <label style={{ marginBottom: 0 }}>
+              Proprietor Name
+              <input value={billDetails.proprietorName} onChange={e => updateDetail("proprietorName", e.target.value)} placeholder="Proprietor Name" />
+            </label>
+          )}
         </div>
       </aside>
 
@@ -259,6 +308,40 @@ export function App() {
         <div className="billTableCard">
           <div className="billTableToolbar">
             <span className="billTableTitle">Bill Items</span>
+
+            <div className="tableFormattingToolbar">
+              <button 
+                className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.bold ? 'active' : ''}`}
+                onClick={toggleBold}
+                disabled={!selectedRowId}
+                title="Bold (Ctrl+B)"
+              >
+                <strong>B</strong>
+              </button>
+              
+              <div className="fontSizeControls">
+                <button onClick={() => adjustFontSize(-1)} disabled={!selectedRowId} title="Decrease Font Size">-</button>
+                <span className="fontSizeDisplay">
+                  {selectedRowId ? (rows.find(r => r.id === selectedRowId)?.fontSize || 11) : 11}px
+                </span>
+                <button onClick={() => adjustFontSize(1)} disabled={!selectedRowId} title="Increase Font Size">+</button>
+              </div>
+              
+              <div className="alignmentControls">
+                {(["left", "center", "right"] as const).map(alignVal => (
+                  <button
+                    key={alignVal}
+                    className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.align === alignVal ? 'active' : ''}`}
+                    onClick={() => changeAlignment(alignVal)}
+                    disabled={!selectedRowId}
+                    title={`Align ${alignVal}`}
+                  >
+                    {alignVal === "left" ? "L" : alignVal === "center" ? "C" : "R"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <button className="primaryButton" style={{ minHeight: 34, padding: "0 12px", fontSize: 13 }} onClick={addRow}>
               <FilePlus2 size={15} /> Add Row
             </button>
@@ -271,16 +354,17 @@ export function App() {
                   <th style={{ width: 44 }} className="thCenter">Sr.</th>
                   <th>Particulars</th>
                   <th style={{ width: 120 }}>Size</th>
-                  <th style={{ width: 100 }} className="thRight">Rate (₹)</th>
+                  <th style={{ width: 100 }} className="thRight">Quantity</th>
+                  <th style={{ width: 100 }} className="thRight">Rate</th>
                   <th style={{ width: 110 }} className="thRight">Amount (₹)</th>
                   <th style={{ width: 36 }}></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map(row => (
-                  <tr key={row.id}>
+                  <tr key={row.id} style={{ background: selectedRowId === row.id ? "#f8fafc" : undefined }}>
                     <td className="tdCenter">
-                      <input className="billCell" style={{ width: 36, textAlign: "center" }} value={row.sr} readOnly tabIndex={-1} />
+                      <input className="billCell" style={{ width: 36, textAlign: "center" }} value={row.sr} readOnly tabIndex={-1} onFocus={() => setSelectedRowId(row.id)} />
                     </td>
                     <td>
                       <input
@@ -288,6 +372,12 @@ export function App() {
                         value={row.particulars}
                         onChange={e => updateRow(row.id, "particulars", e.target.value)}
                         placeholder="Description of work / material…"
+                        onFocus={() => setSelectedRowId(row.id)}
+                        style={{
+                          fontWeight: row.bold ? "bold" : "normal",
+                          fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
+                          textAlign: row.align || "left"
+                        }}
                       />
                     </td>
                     <td>
@@ -296,6 +386,7 @@ export function App() {
                         value={row.size}
                         onChange={e => updateRow(row.id, "size", e.target.value)}
                         placeholder="e.g. 3x4 or 12"
+                        onFocus={() => setSelectedRowId(row.id)}
                       />
                       {row.size.trim() && (() => {
                         const converted = convertAllPointValues(row.size);
@@ -315,9 +406,22 @@ export function App() {
                         style={{ textAlign: "right" }}
                         type="number"
                         min={0}
+                        value={row.quantity || ""}
+                        onChange={e => updateRow(row.id, "quantity", parseFloat(e.target.value) || 0)}
+                        placeholder="0"
+                        onFocus={() => setSelectedRowId(row.id)}
+                      />
+                    </td>
+                    <td className="tdRight">
+                      <input
+                        className="billCell"
+                        style={{ textAlign: "right" }}
+                        type="number"
+                        min={0}
                         value={row.rate || ""}
                         onChange={e => updateRow(row.id, "rate", parseFloat(e.target.value) || 0)}
                         placeholder="0"
+                        onFocus={() => setSelectedRowId(row.id)}
                       />
                     </td>
                     <td className="tdAmount">
@@ -329,6 +433,7 @@ export function App() {
                         value={row.amount || ""}
                         onChange={e => updateRow(row.id, "amount", parseFloat(e.target.value) || 0)}
                         placeholder="0"
+                        onFocus={() => setSelectedRowId(row.id)}
                       />
                     </td>
                     <td>
@@ -344,12 +449,12 @@ export function App() {
               </tbody>
               <tfoot>
                 <tr className="tfTotal">
-                  <td colSpan={4} style={{ textAlign: "right", fontWeight: 700 }}>Total</td>
+                  <td colSpan={5} style={{ textAlign: "right", fontWeight: 700 }}>Total</td>
                   <td style={{ textAlign: "right", fontWeight: 700 }}>{money(total)}</td>
                   <td></td>
                 </tr>
                 <tr className="tfAdvance">
-                  <td colSpan={4} style={{ textAlign: "right" }}>
+                  <td colSpan={5} style={{ textAlign: "right" }}>
                     Advance
                   </td>
                   <td style={{ textAlign: "right" }}>
@@ -365,7 +470,7 @@ export function App() {
                   <td></td>
                 </tr>
                 <tr className="tfBalance">
-                  <td colSpan={4} style={{ textAlign: "right", fontWeight: 700 }}>Balance</td>
+                  <td colSpan={5} style={{ textAlign: "right", fontWeight: 700 }}>Balance</td>
                   <td style={{ textAlign: "right", fontWeight: 700 }}>{money(balance)}</td>
                   <td></td>
                 </tr>
@@ -423,12 +528,13 @@ export function App() {
           { id: "sr", label: "Sr. No", kind: "number", locked: true },
           { id: "particulars", label: "Particulars", kind: "text", locked: true },
           { id: "size", label: "Size", kind: "text", isSize: true },
-          { id: "rate", label: "Rate (₹)", kind: "number", isRate: true },
+          { id: "quantity", label: "Quantity", kind: "number", isQuantity: true },
+          { id: "rate", label: "Rate", kind: "number", isRate: true },
           { id: "amount", label: "Amount (₹)", kind: "formula", locked: true, isAmount: true }
         ]}
         rows={rows.map(r => ({
           id: r.id,
-          cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, rate: String(r.rate), amount: String(r.amount) }
+          cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, quantity: String(r.quantity), rate: String(r.rate), amount: String(r.amount) }
         }))}
         billDetails={billDetails}
         onHeaderChange={setHeader}
@@ -438,7 +544,7 @@ export function App() {
             setRows(prev => {
               const prevMapped = prev.map(r => ({
                 id: r.id,
-                cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, rate: String(r.rate), amount: String(r.amount) }
+                cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, quantity: String(r.quantity), rate: String(r.rate), amount: String(r.amount) }
               }));
               const nextMapped = (updaterOrRows as any)(prevMapped);
               return nextMapped.map((r: any) => ({
@@ -446,6 +552,7 @@ export function App() {
                 sr: parseInt(r.cells.sr) || 1,
                 particulars: r.cells.particulars || "",
                 size: r.cells.size || "",
+                quantity: parseFloat(r.cells.quantity) || 0,
                 rate: parseFloat(r.cells.rate) || 0,
                 amount: parseFloat(r.cells.amount) || 0
               }));
@@ -456,6 +563,7 @@ export function App() {
               sr: parseInt(r.cells.sr) || 1,
               particulars: r.cells.particulars || "",
               size: r.cells.size || "",
+              quantity: parseFloat(r.cells.quantity) || 0,
               rate: parseFloat(r.cells.rate) || 0,
               amount: parseFloat(r.cells.amount) || 0
             })));
