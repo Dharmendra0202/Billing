@@ -78,9 +78,15 @@ export function BillPreview({ header, rows, billDetails }: Props) {
       <p className="pbDate">Date: {billDetails.date}</p>
 
       {/* Client */}
-      <p className="pbTo">To,</p>
-      <p className="pbClientName">{billDetails.clientName || "________________"}</p>
-      <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
+      {billDetails.showClientDetails !== false && (
+        <>
+          <p className="pbTo">To,</p>
+          <p className="pbClientName">{billDetails.clientName || "________________"}</p>
+          {billDetails.showClientAddress !== false && (
+            <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
+          )}
+        </>
+      )}
 
       {/* Subject */}
       {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}

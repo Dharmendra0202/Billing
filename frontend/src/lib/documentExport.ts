@@ -32,12 +32,12 @@ export async function exportToPDF(
 
   // Header
   doc.setFontSize(18);
-  doc.setFont("helvetica", "bold");
+  doc.setFont("times", "bold");
   doc.text(header.businessName || "Business Name", pageWidth / 2, yPos, { align: "center" });
   yPos += 8;
 
   doc.setFontSize(10);
-  doc.setFont("helvetica", "normal");
+  doc.setFont("times", "normal");
   if (header.address) {
     doc.text(header.address, pageWidth / 2, yPos, { align: "center" });
     yPos += 5;
@@ -68,7 +68,7 @@ export async function exportToPDF(
 
     // Table title
     doc.setFontSize(12);
-    doc.setFont("helvetica", "bold");
+    doc.setFont("times", "bold");
     doc.text(table.title, margin, yPos);
     yPos += 8;
 
@@ -79,13 +79,13 @@ export async function exportToPDF(
     doc.rect(margin, yPos - 4, contentWidth, 8, "F");
     
     table.columns.forEach((col, i) => {
-      doc.setFont("helvetica", "bold");
+      doc.setFont("times", "bold");
       doc.text(col.label, margin + i * colWidth + 2, yPos);
     });
     yPos += 8;
 
     // Table rows
-    doc.setFont("helvetica", "normal");
+    doc.setFont("times", "normal");
     for (const row of table.rows) {
       if (yPos > 270) {
         doc.addPage();
@@ -106,7 +106,7 @@ export async function exportToPDF(
         return sum + (parseFloat(row.cells[totalCol.id]) || 0);
       }, 0);
       
-      doc.setFont("helvetica", "bold");
+      doc.setFont("times", "bold");
       doc.text(`Total: ₹${total.toFixed(2)}`, pageWidth - margin - 40, yPos);
       yPos += 10;
     }
@@ -126,7 +126,7 @@ export async function exportToPDF(
   doc.line(margin, yPos, pageWidth - margin, yPos);
   yPos += 8;
   doc.setFontSize(14);
-  doc.setFont("helvetica", "bold");
+  doc.setFont("times", "bold");
   doc.text(`Grand Total: ₹${grandTotal.toFixed(2)}`, pageWidth - margin - 50, yPos);
 
   doc.save(`${filename}.pdf`);
@@ -500,13 +500,13 @@ export async function exportProfessionalPDF(
 
   // Business Name
   doc.setFontSize(22);
-  doc.setFont("helvetica", "bold");
+  doc.setFont("times", "bold");
   doc.text(header.businessName, pageWidth / 2, yPos, { align: "center" });
   yPos += 7;
 
   // Phone
   doc.setFontSize(11);
-  doc.setFont("helvetica", "normal");
+  doc.setFont("times", "normal");
   doc.text(`Mobile No. ${header.phone}`, pageWidth / 2, yPos, { align: "center" });
   yPos += 5;
 
@@ -532,19 +532,27 @@ export async function exportProfessionalPDF(
   yPos += 10;
 
   // Client Details
-  doc.setFont("helvetica", "normal");
-  doc.text("To,", margin, yPos);
-  yPos += 6;
-  doc.setFont("helvetica", "bold");
-  doc.text(billDetails.clientName || "________________", margin, yPos);
-  yPos += 6;
-  doc.setFont("helvetica", "normal");
-  doc.text(billDetails.clientAddress || "________________", margin, yPos);
-  yPos += 12;
+  if (billDetails.showClientDetails !== false) {
+    doc.setFont("times", "normal");
+    doc.text("To,", margin, yPos);
+    yPos += 6;
+    doc.setFont("times", "bold");
+    doc.text(billDetails.clientName || "________________", margin, yPos);
+    yPos += 6;
+    doc.setFont("times", "normal");
+    if (billDetails.showClientAddress !== false) {
+      const addressLines = doc.splitTextToSize(billDetails.clientAddress || "________________", pageWidth - 2 * margin - 40);
+      doc.text(addressLines, margin, yPos);
+      yPos += addressLines.length * 6;
+    } else {
+      yPos += 6;
+    }
+    yPos += 12;
+  }
 
-  // Subject
-  doc.setFont("helvetica", "normal");
-  doc.text(`Sub: ${billDetails.subject}`, margin, yPos, { maxWidth: pageWidth - 40 });
+  // Subject - Centered
+  doc.setFont("times", "normal");
+  doc.text(`Sub: ${billDetails.subject}`, pageWidth / 2, yPos, { align: "center", maxWidth: pageWidth - 40 });
   yPos += 12;
 
   // Table
@@ -569,28 +577,33 @@ export async function exportProfessionalPDF(
     pageWidth - margin
   ];
 
-  const tableStartY = yPos - 4;
+  const headerHeight = 8;
+  const minRowHeight = 8;
+  const yTopHeader = yPos - 4;
+  const tableStartY = yTopHeader;
   
   // Table header
   doc.setFillColor(245, 245, 245);
-  doc.rect(margin, yPos - 4, pageWidth - 2 * margin, 8, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
+  doc.rect(margin, yTopHeader, pageWidth - 2 * margin, headerHeight, "F");
+  doc.setFont("times", "bold");
+  doc.setFontSize(11);
   
-  doc.text("Sr. No", margin + colWidths[0] / 2, yPos, { align: "center" });
-  doc.text("Particulars", margin + colWidths[0] + 2, yPos, { align: "left" });
-  doc.text("Size", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yPos, { align: "center" });
-  doc.text("Qty", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yPos, { align: "center" });
-  doc.text("Rate", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yPos, { align: "right" });
-  doc.text("Amount (Rs.)", pageWidth - margin - 2, yPos, { align: "right" });
+  const yBaseHeader = yTopHeader + headerHeight / 2 + 11 * 0.125;
+  
+  doc.text("Sr. No", margin + colWidths[0] / 2, yBaseHeader, { align: "center" });
+  doc.text("Particulars", margin + colWidths[0] + 2, yBaseHeader, { align: "left" });
+  doc.text("Size", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBaseHeader, { align: "center" });
+  doc.text("Qty", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBaseHeader, { align: "center" });
+  doc.text("Rate", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yBaseHeader, { align: "right" });
+  doc.text("Amount (Rs.)", pageWidth - margin - 2, yBaseHeader, { align: "right" });
   
   // Draw header top and bottom lines
   doc.setDrawColor(0);
   doc.setLineWidth(0.5);
-  doc.line(margin, yPos - 4, pageWidth - margin, yPos - 4);
-  doc.line(margin, yPos + 4, pageWidth - margin, yPos + 4);
+  doc.line(margin, yTopHeader, pageWidth - margin, yTopHeader);
+  doc.line(margin, yTopHeader + headerHeight, pageWidth - margin, yTopHeader + headerHeight);
   
-  yPos += 10;
+  yPos = yTopHeader + headerHeight;
 
   // Table rows
   mainTable?.rows.forEach((row, index) => {
@@ -605,35 +618,44 @@ export async function exportProfessionalPDF(
     const align = (row.cells.align as any) || "left";
     
     // Set custom font for particulars
-    doc.setFont("helvetica", isBold ? "bold" : "normal");
+    doc.setFont("times", isBold ? "bold" : "normal");
     doc.setFontSize(fontSize);
     
     // Handle multi-line particulars
     const lines = doc.splitTextToSize(particulars, colWidths[1] - 4);
-    const rowHeight = Math.max(lines.length * (fontSize * 0.45), 8);
+    const lineSpacing = fontSize * 0.405;
+    const capHeight = fontSize * 0.25;
+    const textHeight = (lines.length - 1) * lineSpacing + capHeight;
+    const rowHeight = Math.max(textHeight + 3.5, minRowHeight);
     
-    doc.text(String(row.cells.sr || index + 1), margin + colWidths[0] / 2, yPos, { align: "center" });
+    const yTop = yPos;
+    const isMultiLine = lines.length > 1;
+    const yBase = isMultiLine
+      ? yTop + rowHeight / 2 - ((lines.length - 1) * lineSpacing) / 2 + capHeight / 2
+      : yTop + rowHeight / 2 + 1.25;
+    
+    doc.text(String(row.cells.sr || index + 1), margin + colWidths[0] / 2, yBase, { align: "center" });
     
     // Align particulars correctly
     const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
     const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
-    doc.text(lines, drawX, yPos, { align: alignOpt });
+    doc.text(lines, drawX, yBase, { align: alignOpt });
 
     // Reset font style for the other cells in the row
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
+    doc.setFont("times", "normal");
+    doc.setFontSize(11);
     
-    doc.text(size || "—", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yPos, { align: "center" });
-    doc.text(quantity > 0 ? String(quantity) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yPos, { align: "center" });
-    doc.text(rate > 0 ? formatIndianNumber(rate) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yPos, { align: "right" });
-    doc.text(amount > 0 ? formatPDFCurrency(amount) : "—", pageWidth - margin - 2, yPos, { align: "right" });
+    doc.text(size || "—", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBase, { align: "center" });
+    doc.text(quantity > 0 ? String(quantity) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBase, { align: "center" });
+    doc.text(rate > 0 ? formatIndianNumber(rate) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yBase, { align: "right" });
+    doc.text(amount > 0 ? formatIndianNumber(amount) : "—", pageWidth - margin - 2, yBase, { align: "right" });
     
-    yPos += rowHeight + 2;
+    yPos += rowHeight;
     // Draw horizontal grid line below the row
-    doc.line(margin, yPos - 6, pageWidth - margin, yPos - 6);
+    doc.line(margin, yPos, pageWidth - margin, yPos);
   });
 
-  const tableEndY = yPos - 6;
+  const tableEndY = yPos;
 
   // Draw vertical grid lines for the items table
   verticalX.forEach(x => {
@@ -641,30 +663,36 @@ export async function exportProfessionalPDF(
   });
 
   // Totals Section
-  yPos = tableEndY;
+  const totalsRowHeight = 7;
   
   // Total Row
-  yPos += 6;
-  doc.setFont("helvetica", "bold");
-  doc.text("Total", verticalX[5] - 2, yPos, { align: "right" });
-  doc.text(formatPDFCurrency(total), pageWidth - margin - 2, yPos, { align: "right" });
-  doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
+  yPos = tableEndY;
+  let yBaseTotals = yPos + totalsRowHeight / 2 + 11 * 0.125;
+  doc.setFont("times", "bold");
+  doc.setFontSize(11);
+  doc.text("Total", verticalX[5] - 2, yBaseTotals, { align: "right" });
+  doc.text(formatIndianNumber(total), pageWidth - margin - 2, yBaseTotals, { align: "right" });
+  doc.line(margin, yPos + totalsRowHeight, pageWidth - margin, yPos + totalsRowHeight);
   
   // Advance Row
-  yPos += 6;
-  doc.setFont("helvetica", "normal");
-  doc.text("Advance", verticalX[5] - 2, yPos, { align: "right" });
-  doc.text(formatPDFCurrency(billDetails.advance), pageWidth - margin - 2, yPos, { align: "right" });
-  doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
+  yPos += totalsRowHeight;
+  yBaseTotals = yPos + totalsRowHeight / 2 + 11 * 0.125;
+  doc.setFont("times", "normal");
+  doc.setFontSize(11);
+  doc.text("Advance", verticalX[5] - 2, yBaseTotals, { align: "right" });
+  doc.text(formatIndianNumber(billDetails.advance), pageWidth - margin - 2, yBaseTotals, { align: "right" });
+  doc.line(margin, yPos + totalsRowHeight, pageWidth - margin, yPos + totalsRowHeight);
   
   // Balance Row
-  yPos += 6;
-  doc.setFont("helvetica", "bold");
-  doc.text("Balance", verticalX[5] - 2, yPos, { align: "right" });
-  doc.text(formatPDFCurrency(balance), pageWidth - margin - 2, yPos, { align: "right" });
-  doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
+  yPos += totalsRowHeight;
+  yBaseTotals = yPos + totalsRowHeight / 2 + 11 * 0.125;
+  doc.setFont("times", "bold");
+  doc.setFontSize(11);
+  doc.text("Balance", verticalX[5] - 2, yBaseTotals, { align: "right" });
+  doc.text(formatIndianNumber(balance), pageWidth - margin - 2, yBaseTotals, { align: "right" });
+  doc.line(margin, yPos + totalsRowHeight, pageWidth - margin, yPos + totalsRowHeight);
 
-  const totalsEndY = yPos + 2;
+  const totalsEndY = yPos + totalsRowHeight;
 
   // Draw vertical borders around Totals section
   doc.line(margin, tableEndY, margin, totalsEndY); // Left border
@@ -675,10 +703,10 @@ export async function exportProfessionalPDF(
 
   // Note
   if (billDetails.showNote && billDetails.note) {
-    doc.setFont("helvetica", "bold");
+    doc.setFont("times", "bold");
     doc.text("Note.", margin, yPos);
     yPos += 5;
-    doc.setFont("helvetica", "normal");
+    doc.setFont("times", "normal");
     doc.text(billDetails.note, margin, yPos, { maxWidth: pageWidth - 40 });
     yPos += 15;
   }
@@ -686,7 +714,7 @@ export async function exportProfessionalPDF(
   // Signature
   if (billDetails.showSignature) {
     yPos = Math.max(yPos, 240); // Push signature to bottom
-    doc.setFont("helvetica", "normal");
+    doc.setFont("times", "normal");
     doc.text(`Proprietor: ${billDetails.proprietorName}`, pageWidth - margin - 60, yPos, { align: "center" });
     yPos += 15;
     doc.text("Authorised Signatory", pageWidth - margin - 60, yPos, { align: "center" });
@@ -718,7 +746,9 @@ export async function exportProfessionalExcel(
   wsData.push([]);
   wsData.push(["To,"]);
   wsData.push([billDetails.clientName]);
-  wsData.push([billDetails.clientAddress]);
+  if (billDetails.showClientAddress !== false) {
+    wsData.push([billDetails.clientAddress]);
+  }
   wsData.push([]);
   wsData.push([`Sub: ${billDetails.subject}`]);
   wsData.push([]);
@@ -822,7 +852,11 @@ export async function exportProfessionalWord(
   // Client
   children.push(new Paragraph({ children: [new TextRun({ text: "To,", size: 22 })], spacing: { before: 200 } }));
   children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientName, bold: true, size: 22 })] }));
-  children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientAddress, size: 22 })], spacing: { after: 200 } }));
+  if (billDetails.showClientAddress !== false) {
+    children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientAddress, size: 22 })], spacing: { after: 200 } }));
+  } else {
+    children.push(new Paragraph({ children: [new TextRun({ text: "", size: 22 })], spacing: { after: 200 } }));
+  }
 
   // Subject
   children.push(

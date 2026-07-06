@@ -19,6 +19,8 @@ export const initialBillDetails: BillDetails = {
   note: "GST 18% will be provided by the client.",
   showSignature: true,
   showNote: true,
+  showClientAddress: true,
+  showClientDetails: true,
   proprietorName: "Mr. Dharmendra Vishwakarma"
 };
 

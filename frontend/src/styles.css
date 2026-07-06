@@ -565,7 +565,7 @@ input:focus, textarea:focus, select:focus {
 .pbDate { text-align: right; font-size: 11px; margin: 10px 0 8px; }
 .pbTo { font-size: 11px; margin: 8px 0 2px; }
 .pbClientName { font-size: 12px; font-weight: bold; margin: 2px 0; }
-.pbClientAddr { font-size: 11px; margin: 2px 0 8px; }
+.pbClientAddr { font-size: 11px; margin: 2px 0 8px; white-space: pre-wrap; }
 .pbSub { font-size: 11px; text-align: center; margin: 10px 0 12px; font-weight: bold; }
 
 .pbTable {

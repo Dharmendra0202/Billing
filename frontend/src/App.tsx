@@ -243,14 +243,22 @@ export function App() {
             Date
             <input type="text" value={billDetails.date} onChange={e => updateDetail("date", e.target.value)} />
           </label>
-          <label>
-            Client Name
-            <input value={billDetails.clientName} onChange={e => updateDetail("clientName", e.target.value)} placeholder="Client / Party name" />
-          </label>
-          <label>
-            Client Address
-            <textarea value={billDetails.clientAddress} onChange={e => updateDetail("clientAddress", e.target.value)} placeholder="Client address" style={{ minHeight: 54 }} />
-          </label>
+          
+          {billDetails.showClientDetails !== false && (
+            <>
+              <label>
+                Client Name (To)
+                <input value={billDetails.clientName} onChange={e => updateDetail("clientName", e.target.value)} placeholder="Client / Party name" />
+              </label>
+              {(billDetails.showClientAddress !== false) && (
+                <label>
+                  Client Address
+                  <textarea value={billDetails.clientAddress} onChange={e => updateDetail("clientAddress", e.target.value)} placeholder="Client address" style={{ minHeight: 54 }} />
+                </label>
+              )}
+            </>
+          )}
+
           <label>
             Subject
             <input value={billDetails.subject} onChange={e => updateDetail("subject", e.target.value)} />
@@ -272,6 +280,16 @@ export function App() {
           <div className="cardHeader">
             <span className="cardTitle">Optional Sections</span>
           </div>
+          <label className="toggleRow">
+            <input type="checkbox" checked={billDetails.showClientDetails !== false} onChange={e => updateDetail("showClientDetails", e.target.checked)} />
+            Show Client Details (To)
+          </label>
+          {billDetails.showClientDetails !== false && (
+            <label className="toggleRow" style={{ marginLeft: 16 }}>
+              <input type="checkbox" checked={billDetails.showClientAddress !== false} onChange={e => updateDetail("showClientAddress", e.target.checked)} />
+              Show Client Address
+            </label>
+          )}
           <label className="toggleRow">
             <input type="checkbox" checked={billDetails.showNote} onChange={e => updateDetail("showNote", e.target.checked)} />
             Show Note section

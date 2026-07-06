@@ -466,24 +466,57 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                   onChange={e => setBillDetails({ ...billDetails, date: e.target.value })}
                   placeholder="DD/MM/YYYY" />
               </label>
-              <label>Client Name
-                <input type="text" value={billDetails.clientName}
-                  onChange={e => setBillDetails({ ...billDetails, clientName: e.target.value })}
-                  placeholder="Atharv Palace" />
-              </label>
+              {billDetails.showClientDetails !== false ? (
+                <label>Client Name
+                  <input type="text" value={billDetails.clientName}
+                    onChange={e => setBillDetails({ ...billDetails, clientName: e.target.value })}
+                    placeholder="Atharv Palace" />
+                </label>
+              ) : (
+                <label>Subject
+                  <input type="text" value={billDetails.subject}
+                    onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
+                </label>
+              )}
             </div>
-            <div className="detailsRow">
-              <label>Client Address
-                <input type="text" value={billDetails.clientAddress}
-                  onChange={e => setBillDetails({ ...billDetails, clientAddress: e.target.value })}
-                  placeholder="Vile Parle East" />
-              </label>
-              <label>Subject
-                <input type="text" value={billDetails.subject}
-                  onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
-              </label>
-            </div>
+            {billDetails.showClientDetails !== false && (
+              <div className="detailsRow">
+                {billDetails.showClientAddress !== false ? (
+                  <>
+                    <label>Client Address
+                      <textarea value={billDetails.clientAddress}
+                        onChange={e => setBillDetails({ ...billDetails, clientAddress: e.target.value })}
+                        placeholder="Vile Parle East"
+                        rows={2}
+                        className="cellTextarea"
+                        style={{ minHeight: 45, resize: "vertical", padding: "6px 10px" }} />
+                    </label>
+                    <label>Subject
+                      <input type="text" value={billDetails.subject}
+                        onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
+                    </label>
+                  </>
+                ) : (
+                  <label style={{ width: "100%" }}>Subject
+                    <input type="text" value={billDetails.subject}
+                      onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
+                  </label>
+                )}
+              </div>
+            )}
             <div className="optionTogglesRow">
+              <label className="toggleOption">
+                <input type="checkbox" checked={billDetails.showClientDetails !== false}
+                  onChange={e => setBillDetails({ ...billDetails, showClientDetails: e.target.checked })} />
+                <span>Client Details (To)</span>
+              </label>
+              {billDetails.showClientDetails !== false && (
+                <label className="toggleOption">
+                  <input type="checkbox" checked={billDetails.showClientAddress !== false}
+                    onChange={e => setBillDetails({ ...billDetails, showClientAddress: e.target.checked })} />
+                  <span>Client Address</span>
+                </label>
+              )}
               <label className="toggleOption">
                 <input type="checkbox" checked={billDetails.showNote}
                   onChange={e => setBillDetails({ ...billDetails, showNote: e.target.checked })} />

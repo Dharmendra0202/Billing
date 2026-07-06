@@ -35,5 +35,7 @@ export type BillDetails = {
   note: string;
   showSignature: boolean;
   showNote: boolean;
+  showClientAddress?: boolean;
+  showClientDetails?: boolean;
   proprietorName: string;
 };
