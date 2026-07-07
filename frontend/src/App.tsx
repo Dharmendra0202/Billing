@@ -1,9 +1,10 @@
-import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan } from "lucide-react";
+import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
+import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader, initialTables } from "./data/initialBill";
 import { money } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
@@ -106,6 +107,7 @@ export function App() {
 
   const [billTitle, setBillTitle] = useState("New Bill");
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [dbPanelOpen, setDbPanelOpen] = useState(false);
 
   // Legacy tables state for AIChat compatibility
   const [tables, setTables] = useState<BillTable[]>(() => {
@@ -217,6 +219,9 @@ export function App() {
           />
         </div>
         <div className="topHeaderActions">
+          <button className="hdrBtn" onClick={() => setDbPanelOpen(true)} title="Cloud Database">
+            <Database size={16} /> Cloud Db
+          </button>
           <button className="hdrBtn" onClick={() => setScannerOpen(true)}>
             <Scan size={16} /> Scan Bill
           </button>
@@ -531,6 +536,48 @@ export function App() {
       </aside>
 
       {/* ── Floating Buttons & Panels ────────────────────────────────────────── */}
+      {dbPanelOpen && (
+        <div className="billScannerOverlay" onClick={e => { if (e.target === e.currentTarget) setDbPanelOpen(false); }}>
+          <div className="billScannerModal" style={{ maxWidth: 450 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: "1px solid #e2e8f0", paddingBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Database size={20} style={{ color: "#1e40af" }} />
+                <h3 style={{ margin: 0, fontSize: 16, color: "#1e293b" }}>Cloud Database Sync</h3>
+              </div>
+              <button 
+                onClick={() => setDbPanelOpen(false)} 
+                style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "#64748b" }}
+              >
+                &times;
+              </button>
+            </div>
+            <SupabaseSyncManager
+              header={header}
+              rows={rows}
+              billDetails={billDetails}
+              billTitle={billTitle}
+              onLoadBill={(bill) => {
+                setBillTitle(bill.bill_title || "Untitled Bill");
+                setHeader(bill.header);
+                setRows(bill.rows);
+                setBillDetails({
+                  clientName: bill.client_name || "",
+                  clientAddress: bill.client_address || "",
+                  date: bill.date || "",
+                  subject: bill.subject || "",
+                  advance: Number(bill.advance) || 0,
+                  note: bill.note || "",
+                  showNote: bill.showNote !== false,
+                  showSignature: bill.showSignature !== false,
+                  proprietorName: bill.proprietorName || ""
+                });
+                setDbPanelOpen(false);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {scannerOpen && (
         <div className="billScannerOverlay" onClick={e => { if (e.target === e.currentTarget) setScannerOpen(false); }}>
           <div className="billScannerModal">
