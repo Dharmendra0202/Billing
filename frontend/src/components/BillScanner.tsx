@@ -170,8 +170,35 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     try {
       const ai  = new AIService("", "ollama");
       const raw = await ai.extractBillFromImage(selectedImage);
-      setRawExtractedText(raw);
-      const data = safeParseJSON(raw);
+      
+      let data: any = null;
+      try {
+        data = safeParseJSON(raw);
+      } catch (e) {
+        setRawExtractedText(raw);
+        throw e;
+      }
+      
+      // Generate clean human-readable text format for simple copy/paste reference
+      let formatted = "";
+      if (data && data.items && data.items.length > 0) {
+        formatted = data.items.map((item: any, idx: number) => {
+          const parts = [];
+          if (item.particulars) parts.push(item.particulars);
+          if (item.size) parts.push(`Size: ${item.size}`);
+          if (item.quantity !== undefined && item.quantity !== null && item.quantity !== "") parts.push(`Qty: ${item.quantity}`);
+          if (item.rate !== undefined && item.rate !== null && item.rate !== "") parts.push(`Rate: ${item.rate}`);
+          if (item.amount !== undefined && item.amount !== null && item.amount !== "") parts.push(`Amount: ${item.amount}`);
+          return `${item.sr ?? (idx + 1)}. ${parts.join("  |  ")}`;
+        }).join("\n");
+        
+        if (data.total) formatted += `\n\nTotal: ${data.total}`;
+        if (data.advance) formatted += `\nAdvance: ${data.advance}`;
+      } else {
+        formatted = raw;
+      }
+      setRawExtractedText(formatted);
+
       if (!data.items?.length) { setScanStatus("⚠️ No items found. Try a clearer image."); return; }
 
       const newRows: ScannedRow[] = data.items.map((item: any, idx: number) => {
