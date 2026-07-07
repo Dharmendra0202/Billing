@@ -6,7 +6,10 @@ export const initialHeader: HeaderTemplate = {
   address: "Sairaj Apt Sadguru Nagar Diva, Thane",
   phone: "9029537078",
   gstNumber: "",
-  tagline: "Specialist In All Interiors Works Plumbing, Painting, P.O.P, Fabricating And Civil Work"
+  tagline: "Specialist In All Interiors Works Plumbing, Painting, P.O.P, Fabricating And Civil Work",
+  fontSizeName: 24,
+  fontSizeContact: 11,
+  fontSizeTagline: 11
 };
 
 // Default bill details - editable per bill
@@ -19,6 +22,7 @@ export const initialBillDetails: BillDetails = {
   note: "GST 18% will be provided by the client.",
   showSignature: true,
   showNote: true,
+  showGST: true,
   showClientAddress: true,
   showClientDetails: true,
   proprietorName: "Mr. Dharmendra Vishwakarma"

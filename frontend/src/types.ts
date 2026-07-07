@@ -5,6 +5,9 @@ export type HeaderTemplate = {
   gstNumber: string;
   logoUrl?: string;
   tagline?: string; // "Specialist In All Interiors Works..."
+  fontSizeName?: number;
+  fontSizeContact?: number;
+  fontSizeTagline?: number;
 };
 
 export type BillColumn = {
@@ -37,5 +40,7 @@ export type BillDetails = {
   showNote: boolean;
   showClientAddress?: boolean;
   showClientDetails?: boolean;
+  showGST?: boolean;
   proprietorName: string;
 };
+

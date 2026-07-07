@@ -483,7 +483,7 @@ export async function exportProfessionalPDF(
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 20;
-  let yPos = 15;
+  let yPos = 10;
 
   // Calculate total
   const mainTable = tables[0];
@@ -492,37 +492,67 @@ export async function exportProfessionalPDF(
   }, 0) || 0;
   const balance = total - billDetails.advance;
 
-  // Top line
+  // Single line above name (drawn wider)
+  doc.setDrawColor(0);
+  doc.setLineWidth(0.5);
+  doc.line(margin - 8, yPos, pageWidth - margin + 8, yPos);
+  
+  const fsName = header.fontSizeName || 24;
+  const fsContact = header.fontSizeContact || 11;
+  const fsTagline = header.fontSizeTagline || 11;
+
+  // Add gap from top single line to business name
+  // Point to mm conversion factor is approx 0.3527.
+  // 2.4mm gap between top line and top of the business name text.
+  yPos += (fsName * 0.3527) + 2.4;
+
+  // Business Name
+  doc.setFontSize(fsName);
+  doc.setFont("times", "bold");
+  doc.text(header.businessName, pageWidth / 2, yPos, { align: "center" });
+  yPos += (fsContact * 0.3527) + 1.5;
+
+  // Phone
+  doc.setFontSize(fsContact);
+  doc.setFont("times", "normal");
+  if (header.phone) {
+    doc.text(`Mobile No. ${header.phone}`, pageWidth / 2, yPos, { align: "center" });
+    yPos += (fsContact * 0.3527 * 1.15);
+  }
+
+  // Address
+  if (header.address) {
+    doc.text(header.address, pageWidth / 2, yPos, { align: "center" });
+    yPos += (fsContact * 0.3527 * 1.15);
+  }
+
+  // GST
+  if (billDetails.showGST !== false && header.gstNumber) {
+    doc.text(`GST: ${header.gstNumber}`, pageWidth / 2, yPos, { align: "center" });
+    yPos += (fsContact * 0.3527 * 1.15);
+  }
+
+  // First double line (top line is longer/full-width, bottom line is indented/shorter)
+  yPos += -1.8;
   doc.setDrawColor(0);
   doc.setLineWidth(0.5);
   doc.line(margin, yPos, pageWidth - margin, yPos);
-  yPos += 8;
+  doc.line(margin + 10, yPos + 1.0, pageWidth - margin - 10, yPos + 1.0);
+  
+  // Tagline (reduced gap below bottom line of double-line)
+  yPos += 1.0 + (fsTagline * 0.3527) + 1.2;
 
-  // Business Name
-  doc.setFontSize(22);
-  doc.setFont("times", "bold");
-  doc.text(header.businessName, pageWidth / 2, yPos, { align: "center" });
-  yPos += 7;
-
-  // Phone
-  doc.setFontSize(11);
-  doc.setFont("times", "normal");
-  doc.text(`Mobile No. ${header.phone}`, pageWidth / 2, yPos, { align: "center" });
-  yPos += 5;
-
-  // Address
-  doc.text(header.address, pageWidth / 2, yPos, { align: "center" });
-  yPos += 5;
-
-  // Bottom line
-  doc.line(margin, yPos, pageWidth - margin, yPos);
-  yPos += 5;
-
-  // Tagline
   if (header.tagline) {
-    doc.setFontSize(10);
-    doc.text(header.tagline, pageWidth / 2, yPos, { align: "center", maxWidth: pageWidth - 40 });
-    yPos += 10;
+    doc.setFontSize(fsTagline);
+    doc.setFont("times", "normal");
+    const taglineLines = doc.splitTextToSize(header.tagline, pageWidth - 40);
+    taglineLines.forEach((line: string, idx: number) => {
+      doc.text(line, pageWidth / 2, yPos, { align: "center" });
+      if (idx < taglineLines.length - 1) {
+        yPos += (fsTagline * 0.3527 * 1.15);
+      }
+    });
+    yPos += (fsTagline * 0.3527 * 0.5) + 6.0;
   }
 
   // Date - Right aligned
@@ -738,8 +768,9 @@ export async function exportProfessionalExcel(
 
   // Header
   wsData.push([header.businessName]);
-  wsData.push([`Mobile No. ${header.phone}`]);
-  wsData.push([header.address]);
+  if (header.phone) wsData.push([`Mobile No. ${header.phone}`]);
+  if (header.address) wsData.push([header.address]);
+  if (billDetails.showGST !== false && header.gstNumber) wsData.push([`GST: ${header.gstNumber}`]);
   if (header.tagline) wsData.push([header.tagline]);
   wsData.push([]);
   wsData.push([`Date: ${billDetails.date}`]);
@@ -806,36 +837,75 @@ export async function exportProfessionalWord(
 
   const children: (Paragraph | Table)[] = [];
 
-  // Header
+  const fsName = header.fontSizeName || 24;
+  const fsContact = header.fontSizeContact || 11;
+  const fsTagline = header.fontSizeTagline || 11;
+
+  // Business Name with a top border (single line above name)
   children.push(
     new Paragraph({
-      children: [new TextRun({ text: header.businessName, bold: true, size: 40 })],
+      children: [new TextRun({ text: header.businessName, bold: true, size: fsName * 2 })],
       alignment: AlignmentType.CENTER,
-      border: { top: { style: BorderStyle.SINGLE, size: 6 }, bottom: { style: BorderStyle.SINGLE, size: 6 } },
-      spacing: { after: 100 }
+      spacing: { before: 0, after: 0 },
+      border: {
+        top: { style: BorderStyle.SINGLE, size: 6, space: 4, color: "000000" }
+      }
     })
   );
 
-  children.push(
-    new Paragraph({
-      children: [new TextRun({ text: `Mobile No. ${header.phone}`, size: 22 })],
-      alignment: AlignmentType.CENTER
-    })
-  );
+  const beforeTaglineConfigs: {
+    text: string;
+    size: number;
+    spacing?: { before: number; after: number };
+  }[] = [];
 
-  children.push(
-    new Paragraph({
-      children: [new TextRun({ text: header.address, size: 22 })],
-      alignment: AlignmentType.CENTER
-    })
-  );
+  if (header.phone) {
+    beforeTaglineConfigs.push({
+      text: `Mobile No. ${header.phone}`,
+      size: fsContact * 2,
+      spacing: { before: 0, after: 0 }
+    });
+  }
+
+  if (header.address) {
+    beforeTaglineConfigs.push({
+      text: header.address,
+      size: fsContact * 2,
+      spacing: { before: 0, after: 0 }
+    });
+  }
+
+  if (billDetails.showGST !== false && header.gstNumber) {
+    beforeTaglineConfigs.push({
+      text: `GST: ${header.gstNumber}`,
+      size: fsContact * 2,
+      spacing: { before: 0, after: 0 }
+    });
+  }
+
+  beforeTaglineConfigs.forEach((cfg, idx) => {
+    const isLast = idx === beforeTaglineConfigs.length - 1;
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: cfg.text, size: cfg.size })],
+        alignment: AlignmentType.CENTER,
+        spacing: cfg.spacing ? {
+          before: cfg.spacing.before,
+          after: isLast ? 20 : cfg.spacing.after
+        } : undefined,
+        border: isLast ? {
+          bottom: { style: BorderStyle.DOUBLE, size: 12, space: 2, color: "000000" }
+        } : undefined
+      })
+    );
+  });
 
   if (header.tagline) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: header.tagline, size: 20, italics: true })],
+        children: [new TextRun({ text: header.tagline, size: fsTagline * 2, italics: true })],
         alignment: AlignmentType.CENTER,
-        spacing: { after: 200 }
+        spacing: { before: 20, after: 20 }
       })
     );
   }

@@ -58,21 +58,43 @@ export function BillPreview({ header, rows, billDetails }: Props) {
 
   return (
     <div>
-      {/* Top border */}
-      <div className="pbTopLine" />
+      {/* Single Line above Name */}
+      <div className="pbSingleLine" />
 
       {/* Business Name */}
-      <div className="pbBizName">{header.businessName || "BUSINESS NAME"}</div>
+      <div className="pbBizName" style={{ fontSize: `${header.fontSizeName ?? 24}px` }}>
+        {header.businessName || "BUSINESS NAME"}
+      </div>
 
       {/* Contact */}
-      {header.phone && <p className="pbContactLine">Mobile No. {header.phone}</p>}
-      {header.address && <p className="pbContactLine">{header.address}</p>}
-      {header.gstNumber && <p className="pbContactLine">GST: {header.gstNumber}</p>}
+      {header.phone && (
+        <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
+          Mobile No. {header.phone}
+        </p>
+      )}
+      {header.address && (
+        <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
+          {header.address}
+        </p>
+      )}
+      {billDetails.showGST !== false && header.gstNumber && (
+        <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
+          GST: {header.gstNumber}
+        </p>
+      )}
 
-      <div className="pbBottomLine" />
+      {/* First Double Line */}
+      <div className="pbDoubleLineContainer">
+        <div className="pbDoubleLineTop" />
+        <div className="pbDoubleLineBottom" />
+      </div>
 
       {/* Tagline */}
-      {header.tagline && <p className="pbTagline">{header.tagline}</p>}
+      {header.tagline ? (
+        <p className="pbTagline" style={{ fontSize: `${header.fontSizeTagline ?? 11}px` }}>
+          {header.tagline}
+        </p>
+      ) : null}
 
       {/* Date */}
       <p className="pbDate">Date: {billDetails.date}</p>

@@ -291,6 +291,10 @@ export function App() {
             </label>
           )}
           <label className="toggleRow">
+            <input type="checkbox" checked={billDetails.showGST !== false} onChange={e => updateDetail("showGST", e.target.checked)} />
+            Show GST Number
+          </label>
+          <label className="toggleRow">
             <input type="checkbox" checked={billDetails.showNote} onChange={e => updateDetail("showNote", e.target.checked)} />
             Show Note section
           </label>

@@ -518,12 +518,12 @@ input:focus, textarea:focus, select:focus {
 .previewSheet {
   border: 1px solid #cbd5e1;
   border-radius: 6px;
-  padding: 20px 18px;
+  padding: 6px 18px 12px 18px;
   background: #fff;
   font-family: "Times New Roman", Times, serif;
   color: #000;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.4;
   flex: 1;
   min-height: 480px;
 }
@@ -557,16 +557,33 @@ input:focus, textarea:focus, select:focus {
 .exportBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Bill Preview internal styles ───────────────────────────────────────────── */
-.pbTopLine { height: 2px; background: #000; margin-bottom: 6px; }
-.pbBottomLine { height: 1px; background: #000; margin: 6px 0; }
-.pbBizName { font-size: 22px; font-weight: bold; text-align: center; letter-spacing: 1px; margin: 4px 0; }
-.pbContactLine { font-size: 11px; text-align: center; margin: 2px 0; }
-.pbTagline { font-size: 10px; font-style: italic; text-align: center; margin: 4px 0 2px; line-height: 1.4; }
-.pbDate { text-align: right; font-size: 11px; margin: 10px 0 8px; }
-.pbTo { font-size: 11px; margin: 8px 0 2px; }
-.pbClientName { font-size: 12px; font-weight: bold; margin: 2px 0; }
-.pbClientAddr { font-size: 11px; margin: 2px 0 8px; white-space: pre-wrap; }
-.pbSub { font-size: 11px; text-align: center; margin: 10px 0 12px; font-weight: bold; }
+.pbSingleLine {
+  border-top: 1px solid #000;
+  margin: 3px -12px 0px -12px;
+}
+.pbDoubleLineContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5px;
+  margin: -5px 0 2px 0;
+}
+.pbDoubleLineTop {
+  border-top: 1px solid #000;
+  width: 100%;
+}
+.pbDoubleLineBottom {
+  border-top: 1px solid #000;
+  width: calc(100% - 24px);
+  margin: 0 auto;
+}
+.pbBizName { font-weight: bold; text-align: center; letter-spacing: 1px; margin: 0; line-height: 1.1; }
+.pbContactLine { text-align: center; margin: 0; line-height: 1.1; }
+.pbTagline { text-align: center; margin: 2px 0 0 0; line-height: 1.2; }
+.pbDate { text-align: right; font-size: 11px; margin: 4px 0 2px; }
+.pbTo { font-size: 11px; margin: 4px 0 0 0; }
+.pbClientName { font-size: 12px; font-weight: bold; margin: 1px 0; }
+.pbClientAddr { font-size: 11px; margin: 1px 0 4px; white-space: pre-wrap; }
+.pbSub { font-size: 11px; text-align: center; margin: 6px 0 8px; font-weight: bold; }
 
 .pbTable {
   width: 100%;

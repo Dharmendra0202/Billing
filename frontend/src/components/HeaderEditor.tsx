@@ -60,6 +60,32 @@ export function HeaderEditor({ header, onChange }: Props) {
               style={{ minHeight: 52 }}
             />
           </label>
+          <div className="twoCols">
+            <label>
+              Name Font Size
+              <input
+                type="number"
+                value={header.fontSizeName ?? 24}
+                onChange={e => onChange({ ...header, fontSizeName: parseInt(e.target.value) || 24 })}
+              />
+            </label>
+            <label>
+              Contact/Address Size
+              <input
+                type="number"
+                value={header.fontSizeContact ?? 11}
+                onChange={e => onChange({ ...header, fontSizeContact: parseInt(e.target.value) || 11 })}
+              />
+            </label>
+          </div>
+          <label>
+            Tagline Font Size
+            <input
+              type="number"
+              value={header.fontSizeTagline ?? 11}
+              onChange={e => onChange({ ...header, fontSizeTagline: parseInt(e.target.value) || 11 })}
+            />
+          </label>
         </div>
       )}
     </div>
