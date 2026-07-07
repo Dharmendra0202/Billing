@@ -2,6 +2,7 @@ import { MessageCircle, Send, Settings, X, Download, Trash2, Image, XCircle, Bot
 import { useState, useRef, useEffect } from "react";
 import { AIService, type AIMessage } from "../lib/aiService";
 import type { HeaderTemplate, BillDetails } from "../types";
+import { safeParseJSON } from "../lib/jsonHelper";
 
 // ── Row / Col types (same as App.tsx) ────────────────────────────────────────
 type ColKind = "text" | "number" | "formula";
@@ -484,9 +485,7 @@ JSON response:`;
     try {
       const fullPrompt = buildFullPrompt(userMsg.content);
       const raw = await aiServiceRef.current.rawOllamaCall(fullPrompt);
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("AI returned invalid response. Try rephrasing.");
-      const parsed = JSON.parse(match[0]);
+      const parsed = safeParseJSON(raw);
       const replyText = applyCommand(parsed);
       setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: "assistant", content: replyText, timestamp: Date.now() }]);
     } catch (err) {

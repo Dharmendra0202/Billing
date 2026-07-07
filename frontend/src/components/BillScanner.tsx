@@ -12,6 +12,7 @@ import { initialBillDetails } from "../data/initialBill";
 import * as pdfjsLib from "pdfjs-dist";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
+import { safeParseJSON } from "../lib/jsonHelper";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 type ScannedRow = {
@@ -167,9 +168,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     try {
       const ai  = new AIService("", "ollama");
       const raw = await ai.extractBillFromImage(selectedImage);
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("AI did not return valid JSON. Try again.");
-      const data = JSON.parse(match[0]);
+      const data = safeParseJSON(raw);
       if (!data.items?.length) { setScanStatus("⚠️ No items found. Try a clearer image."); return; }
 
       const newRows: ScannedRow[] = data.items.map((item: any, idx: number) => {
@@ -325,9 +324,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
         advance: billDetails.advance, note: billDetails.note
       };
       const rawResponse = await ai.scannerCommand(text, rows, detailsForAI);
-      const match = rawResponse.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("AI returned invalid response. Try rephrasing.");
-      const parsed = JSON.parse(match[0]);
+      const parsed = safeParseJSON(rawResponse);
       const replyText = applyAICommand(parsed);
       setChatMsgs(prev => [...prev, { id: uid(), role: "ai", text: replyText }]);
       // switch to table tab so user can see changes
