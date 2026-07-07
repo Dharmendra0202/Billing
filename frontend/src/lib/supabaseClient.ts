@@ -1,12 +1,28 @@
 import { createClient } from "@supabase/supabase-js";
 
-const getSupabaseUrl = () => import.meta.env.VITE_SUPABASE_URL || localStorage.getItem("supabase_url") || "";
-const getSupabaseAnonKey = () => import.meta.env.VITE_SUPABASE_ANON_KEY || localStorage.getItem("supabase_anon_key") || "";
+const getSupabaseUrl = () => {
+  const url = import.meta.env.VITE_SUPABASE_URL || localStorage.getItem("supabase_url") || "";
+  return url.trim();
+};
 
-export const supabase = createClient(getSupabaseUrl(), getSupabaseAnonKey());
+const getSupabaseAnonKey = () => {
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY || localStorage.getItem("supabase_anon_key") || "";
+  return key.trim();
+};
+
+const url = getSupabaseUrl();
+const key = getSupabaseAnonKey();
+const isValidUrl = url.startsWith("http://") || url.startsWith("https://");
+
+export const supabase = (url && key && isValidUrl)
+  ? createClient(url, key)
+  : null as any;
 
 export function isSupabaseConfigured() {
-  return !!(getSupabaseUrl() && getSupabaseAnonKey());
+  const url = getSupabaseUrl();
+  const key = getSupabaseAnonKey();
+  const isValidUrl = url.startsWith("http://") || url.startsWith("https://");
+  return !!(url && key && isValidUrl);
 }
 
 export function getStoredConfig() {
