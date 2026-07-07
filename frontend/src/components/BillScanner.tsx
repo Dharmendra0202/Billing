@@ -9,6 +9,9 @@ import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord 
 import { convertAllPointValues } from "../lib/inchConversion";
 import type { HeaderTemplate, BillDetails } from "../types";
 import { initialBillDetails } from "../data/initialBill";
+import * as pdfjsLib from "pdfjs-dist";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
 
 // ── types ─────────────────────────────────────────────────────────────────────
 type ScannedRow = {
@@ -96,20 +99,69 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMsgs]);
 
-  // ── image select ─────────────────────────────────────────────────────────────
-  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── file select (Image or PDF) ──────────────────────────────────────────────
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith("image/")) { alert("Please select an image file"); return; }
-    if (file.size > 10 * 1024 * 1024)   { alert("Image must be < 10 MB"); return; }
-    setSelectedImage(await AIService.fileToBase64(file));
-    setScanStatus("Image ready. Click Scan.");
+    setScanStatus("");
+    
+    if (file.type === "application/pdf") {
+      setIsScanning(true);
+      setScanStatus("Parsing PDF page…");
+      try {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const arrayBuffer = reader.result as ArrayBuffer;
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            
+            if (pdf.numPages === 0) {
+              alert("The PDF has no pages.");
+              setIsScanning(false);
+              return;
+            }
+            
+            const page = await pdf.getPage(1);
+            const viewport = page.getViewport({ scale: 2.0 }); // 2x scale for crisp OCR rendering
+            
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("Could not create canvas context.");
+            
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            await page.render({ canvasContext: context, viewport, canvas }).promise;
+            
+            const dataUrl = canvas.toDataURL("image/png");
+            setSelectedImage(dataUrl);
+            setScanStatus("PDF page 1 loaded. Click Scan Bill.");
+          } catch (err: any) {
+            alert(`Error reading PDF: ${err.message || err}`);
+            setScanStatus("Error loading PDF.");
+          } finally {
+            setIsScanning(false);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } catch (err: any) {
+        alert(`Error reading file: ${err.message || err}`);
+        setIsScanning(false);
+      }
+    } else if (file.type.startsWith("image/")) {
+      if (file.size > 10 * 1024 * 1024) { alert("Image must be < 10 MB"); return; }
+      setSelectedImage(await AIService.fileToBase64(file));
+      setScanStatus("Image ready. Click Scan Bill.");
+    } else {
+      alert("Please select a valid image (JPG, PNG) or PDF file.");
+    }
+    
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   // ── scan ─────────────────────────────────────────────────────────────────────
   const scanBill = async () => {
-    if (!selectedImage) { setScanStatus("Upload an image first."); return; }
+    if (!selectedImage) { setScanStatus("Upload a file first."); return; }
     setIsScanning(true);
     setScanStatus("🔍 AI is reading the bill… (10–30 sec)");
     try {
@@ -421,9 +473,9 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
 
           {/* 1. Upload */}
           <div className="scannerSection">
-            <h4>1️⃣ Upload Bill Image</h4>
-            <input ref={fileInputRef} type="file" accept="image/*"
-              style={{ display: "none" }} onChange={handleImageSelect} />
+            <h4>1️⃣ Upload Bill Image or PDF</h4>
+            <input ref={fileInputRef} type="file" accept="image/*,application/pdf"
+              style={{ display: "none" }} onChange={handleFileSelect} />
             {selectedImage ? (
               <div className="imagePreviewBox">
                 <img src={selectedImage} alt="bill" />
@@ -434,8 +486,8 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
             ) : (
               <button className="uploadDropzone" onClick={() => fileInputRef.current?.click()}>
                 <Camera size={28} />
-                <span>Click to upload bill image</span>
-                <small>JPG, PNG — max 10 MB</small>
+                <span>Click to upload bill file</span>
+                <small>JPG, PNG, PDF — max 10 MB</small>
               </button>
             )}
           </div>

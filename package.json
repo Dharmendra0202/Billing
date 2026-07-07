@@ -29,6 +29,7 @@
     "jspdf": "^4.2.1",
     "lucide-react": "^0.468.0",
     "openai": "^6.45.0",
+    "pdfjs-dist": "^6.1.200",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tesseract.js": "^7.0.0",
