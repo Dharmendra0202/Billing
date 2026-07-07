@@ -170,7 +170,9 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     setRawExtractedText("");
     setScanResult(null);
     try {
-      const ai  = new AIService("", "ollama");
+      const provider = (localStorage.getItem("ai_provider") as any) || "ollama";
+      const apiKey = localStorage.getItem("ai_api_key") || "";
+      const ai = new AIService(apiKey, provider);
       const raw = await ai.extractBillFromImage(selectedImage);
       
       let data: any = null;
@@ -350,7 +352,9 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     setChatInput("");
     setIsAiThinking(true);
     try {
-      const ai = new AIService("", "ollama");
+      const provider = (localStorage.getItem("ai_provider") as any) || "ollama";
+      const apiKey = localStorage.getItem("ai_api_key") || "";
+      const ai = new AIService(apiKey, provider);
       const detailsForAI = {
         date: billDetails.date, clientName: billDetails.clientName,
         clientAddress: billDetails.clientAddress, subject: billDetails.subject,
