@@ -117,13 +117,32 @@ export function AIChat({
         onRowsChange(prev => {
           const newCells: Record<string, string> = { sr: String(prev.length + 1) };
           cols.forEach(c => { newCells[c.id] = ""; });
-          if (partCol)  newCells[partCol.id]  = data.particulars || "";
-          if (sizeCol)  newCells[sizeCol.id]  = String(data.size || "");
+          
+          // Map dynamic fields matching column ID or label (case-insensitive)
+          Object.keys(data).forEach(key => {
+            if (key === "bold" || key === "fontSize" || key === "align") return;
+            const col = cols.find(c => c.id === key || c.label.toLowerCase() === key.toLowerCase());
+            if (col) {
+              newCells[col.id] = String(data[key]);
+            }
+          });
+          
+          // Backward compatibility support for legacy key names
+          if (data.particulars !== undefined && partCol && !newCells[partCol.id]) {
+            newCells[partCol.id] = String(data.particulars);
+          }
+          if (data.size !== undefined && sizeCol && !newCells[sizeCol.id]) {
+            newCells[sizeCol.id] = String(data.size);
+          }
+          if (data.rate !== undefined && rateCol && !newCells[rateCol.id]) {
+            newCells[rateCol.id] = String(data.rate);
+          }
+          
           const qtyCol = cols.find(c => c.isQuantity);
           if (qtyCol) {
             newCells[qtyCol.id] = String(data.quantity !== undefined ? data.quantity : parseSize(newCells[sizeCol?.id ?? ""]));
           }
-          if (rateCol)  newCells[rateCol.id]  = String(data.rate || "0");
+          
           newCells.bold = String(data.bold || false);
           newCells.fontSize = String(data.fontSize || 11);
           newCells.align = data.align || "left";
@@ -133,19 +152,38 @@ export function AIChat({
         });
         break;
       }
-
+ 
       case "ADD_MULTIPLE_ROWS": {
         onRowsChange(prev => {
           const added: EditorRow[] = (data.rows || []).map((item: any, i: number) => {
             const cells: Record<string, string> = { sr: String(prev.length + i + 1) };
             cols.forEach(c => { cells[c.id] = ""; });
-            if (partCol)  cells[partCol.id]  = item.particulars || "";
-            if (sizeCol)  cells[sizeCol.id]  = String(item.size || "");
+            
+            // Map dynamic fields matching column ID or label (case-insensitive)
+            Object.keys(item).forEach(key => {
+              if (key === "bold" || key === "fontSize" || key === "align") return;
+              const col = cols.find(c => c.id === key || c.label.toLowerCase() === key.toLowerCase());
+              if (col) {
+                cells[col.id] = String(item[key]);
+              }
+            });
+            
+            // Backward compatibility
+            if (item.particulars !== undefined && partCol && !cells[partCol.id]) {
+              cells[partCol.id] = String(item.particulars);
+            }
+            if (item.size !== undefined && sizeCol && !cells[sizeCol.id]) {
+              cells[sizeCol.id] = String(item.size);
+            }
+            if (item.rate !== undefined && rateCol && !cells[rateCol.id]) {
+              cells[rateCol.id] = String(item.rate);
+            }
+            
             const qtyCol = cols.find(c => c.isQuantity);
             if (qtyCol) {
               cells[qtyCol.id] = String(item.quantity !== undefined ? item.quantity : parseSize(cells[sizeCol?.id ?? ""]));
             }
-            if (rateCol)  cells[rateCol.id]  = String(item.rate || "0");
+            
             cells.bold = String(item.bold || false);
             cells.fontSize = String(item.fontSize || 11);
             cells.align = item.align || "left";
@@ -155,40 +193,61 @@ export function AIChat({
         });
         break;
       }
-
+ 
       case "UPDATE_ROW": {
         onRowsChange(prev => {
           const updated = prev.map(r => {
             if (r.cells.sr !== String(data.sr)) return r;
             const next = { ...r, cells: { ...r.cells } };
+            
+            // Map dynamic fields matching column ID or label (case-insensitive)
+            Object.keys(data).forEach(key => {
+              if (key === "sr") return;
+              if (key === "bold") { next.cells.bold = String(data.bold); return; }
+              if (key === "fontSize") { next.cells.fontSize = String(data.fontSize); return; }
+              if (key === "align") { next.cells.align = String(data.align); return; }
+              
+              const col = cols.find(c => c.id === key || c.label.toLowerCase() === key.toLowerCase());
+              if (col) {
+                next.cells[col.id] = String(data[key]);
+                if (col.isSize) {
+                  const qtyCol = cols.find(c => c.isQuantity);
+                  if (qtyCol && data.quantity === undefined) {
+                    next.cells[qtyCol.id] = String(parseSize(String(data[key])));
+                  }
+                }
+              }
+            });
+            
+            // Backward compatibility
             if (data.particulars !== undefined && partCol) next.cells[partCol.id] = String(data.particulars);
             if (data.size        !== undefined && sizeCol) {
               next.cells[sizeCol.id] = String(data.size);
               const qtyCol = cols.find(c => c.isQuantity);
-              if (qtyCol) next.cells[qtyCol.id] = String(parseSize(String(data.size)));
+              if (qtyCol && data.quantity === undefined) {
+                next.cells[qtyCol.id] = String(parseSize(String(data.size)));
+              }
             }
             if (data.quantity    !== undefined) {
               const qtyCol = cols.find(c => c.isQuantity);
               if (qtyCol) next.cells[qtyCol.id] = String(data.quantity);
             }
             if (data.rate        !== undefined && rateCol) next.cells[rateCol.id] = String(data.rate);
-            if (data.bold        !== undefined) next.cells.bold = String(data.bold);
-            if (data.fontSize    !== undefined) next.cells.fontSize = String(data.fontSize);
-            if (data.align       !== undefined) next.cells.align = String(data.align);
+            
             return next;
           });
           return recalcAmounts(updated, cols);
         });
         break;
       }
-
+ 
       case "DELETE_ROW": {
         onRowsChange(prev =>
           renumber(recalcAmounts(prev.filter(r => r.cells.sr !== String(data.sr)), cols))
         );
         break;
       }
-
+ 
       case "DELETE_LAST_ROW": {
         onRowsChange(prev => {
           if (prev.length <= 1) return prev;
@@ -196,14 +255,14 @@ export function AIChat({
         });
         break;
       }
-
+ 
       case "CLEAR_TABLE": {
         const blankCells: Record<string, string> = { sr: "1" };
         cols.forEach(c => { blankCells[c.id] = ""; });
         onRowsChange([{ id: uid(), cells: blankCells }]);
         break;
       }
-
+ 
       case "UPDATE_DETAIL": {
         const { field, value } = data;
         let parsedValue: any = value;
@@ -215,9 +274,13 @@ export function AIChat({
         onBillDetailsChange({ ...billDetails, [field]: parsedValue });
         break;
       }
-
+ 
       case "UPDATE_HEADER": {
-        onHeaderChange({ ...header, [data.field]: data.value });
+        let val = data.value;
+        if (data.field && data.field.startsWith("fontSize")) {
+          val = parseInt(val) || undefined;
+        }
+        onHeaderChange({ ...header, [data.field]: val });
         break;
       }
 
@@ -289,12 +352,11 @@ export function AIChat({
   // ── Build AI prompt that knows about the CURRENT state ────────────────────
   const buildFullPrompt = (userPrompt: string): string => {
     const rowSummary = rows.map(r => {
-      const srVal = r.cells.sr;
-      const partVal = r.cells[cols.find(c => c.id === "particulars")?.id ?? ""] || "";
-      const sizeVal = r.cells[cols.find(c => c.isSize)?.id ?? ""] || "";
-      const rateVal = r.cells[cols.find(c => c.isRate)?.id ?? ""] || "";
-      const amtVal  = r.cells[cols.find(c => c.isAmount)?.id ?? ""] || "";
-      return { sr: srVal, particulars: partVal, size: sizeVal, rate: rateVal, amount: amtVal };
+      const summary: Record<string, string> = { sr: r.cells.sr };
+      cols.forEach(c => {
+        summary[c.label] = r.cells[c.id] || "";
+      });
+      return summary;
     });
 
     const colSummary = cols.map(c => ({ id: c.id, label: c.label, kind: c.kind, isSize: c.isSize, isRate: c.isRate, isAmount: c.isAmount }));
@@ -316,10 +378,10 @@ ${JSON.stringify(rowSummary, null, 2)}
 
 ## YOUR CAPABILITIES
 You can do ANYTHING the user asks. You have full control:
-- Edit any row cell
+- Edit any row cell: Pass the column label (case-insensitive) as the key in the JSON response (e.g. if column is "Unit", pass "Unit": "value").
 - Add/delete rows
 - Change bill details (client, date, subject, advance)
-- Change header (business name, phone, address)
+- Change header (business name, phone, address, gstNumber, tagline, fontSizeName, fontSizeContact, fontSizeTagline)
 - Add new columns
 - Rename columns (e.g. "Size" → "SFT")
 - Apply GST / discount
@@ -336,13 +398,13 @@ Return ONLY valid JSON (no markdown, no extra text):
 ## ACTIONS
 
 ADD_ROW:
-{ "action": "ADD_ROW", "data": { "particulars": "Window glass", "size": "10x5", "rate": 200 }, "reply": "Added row..." }
+{ "action": "ADD_ROW", "data": { "Particulars": "Window glass", "Size": "10x5", "Rate": 200, "Unit": "Nos" }, "reply": "Added row..." }
 
 ADD_MULTIPLE_ROWS:
-{ "action": "ADD_MULTIPLE_ROWS", "data": { "rows": [{"particulars":"...", "size":"...", "rate":0},...] }, "reply": "..." }
+{ "action": "ADD_MULTIPLE_ROWS", "data": { "rows": [{"Particulars":"...", "Size":"...", "Rate":0, "Unit": "..."}] }, "reply": "..." }
 
-UPDATE_ROW (sr is 1-based row number):
-{ "action": "UPDATE_ROW", "data": { "sr": 2, "particulars": "new name", "rate": 300 }, "reply": "..." }
+UPDATE_ROW (sr is 1-based row number, can update ANY column label key):
+{ "action": "UPDATE_ROW", "data": { "sr": 2, "Particulars": "new name", "Rate": 300, "Unit": "Box", "bold": true, "fontSize": 14, "align": "center" }, "reply": "..." }
 
 DELETE_ROW (sr is 1-based):
 { "action": "DELETE_ROW", "data": { "sr": 3 }, "reply": "..." }
@@ -356,7 +418,7 @@ CLEAR_TABLE:
 UPDATE_DETAIL (fields: clientName, clientAddress, date, subject, advance, note, showNote, showSignature, proprietorName):
 { "action": "UPDATE_DETAIL", "data": { "field": "clientName", "value": "ABC Corp" }, "reply": "..." }
 
-UPDATE_HEADER (fields: businessName, phone, address, gstNumber, tagline):
+UPDATE_HEADER (fields: businessName, phone, address, gstNumber, tagline, fontSizeName, fontSizeContact, fontSizeTagline):
 { "action": "UPDATE_HEADER", "data": { "field": "businessName", "value": "XYZ Works" }, "reply": "..." }
 
 ADD_COLUMN (adds a new custom column before Amount):
@@ -372,7 +434,7 @@ APPLY_DISCOUNT:
 { "action": "APPLY_DISCOUNT", "data": { "percent": 10 }, "reply": "Applied 10% discount." }
 
 ## FORMULA RULES
-- Quantity = parseSize(size) (if size is provided, set quantity to its calculation)
+- Quantity = parseSize(Size) (if Size is provided, set Quantity to its calculation)
 - Amount = Quantity * Rate
 - parseSize("10x5") = 50, parseSize("3x4x2") = 24, parseSize("12") = 12
 - Total = SUM of all amount values
