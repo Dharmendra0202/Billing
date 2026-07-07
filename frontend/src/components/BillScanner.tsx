@@ -1,7 +1,7 @@
 import {
   Camera, FileSpreadsheet, FileText, FileType,
   Loader2, ScanLine, Upload, Ruler, Plus, Trash2,
-  Send, Bot, User, Sparkles
+  Send, Bot, User, Sparkles, Copy
 } from "lucide-react";
 import { useState, useRef, useMemo, useEffect } from "react";
 import { AIService } from "../lib/aiService";
@@ -69,6 +69,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
   const [isScanning, setIsScanning]                   = useState(false);
   const [scanStatus, setScanStatus]                   = useState("");
   const [rawExtractedText, setRawExtractedText]       = useState("");
+  const [scanResult, setScanResult]                   = useState<any>(null);
   const [applyInchConversion, setApplyInchConversion] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -167,6 +168,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     setIsScanning(true);
     setScanStatus("🔍 AI is reading the bill… (10–30 sec)");
     setRawExtractedText("");
+    setScanResult(null);
     try {
       const ai  = new AIService("", "ollama");
       const raw = await ai.extractBillFromImage(selectedImage);
@@ -174,6 +176,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
       let data: any = null;
       try {
         data = safeParseJSON(raw);
+        setScanResult(data);
       } catch (e) {
         setRawExtractedText(raw);
         throw e;
@@ -535,26 +538,80 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
             </button>
             {scanStatus && <p className="statusText">{scanStatus}</p>}
             
-            {rawExtractedText && (
-              <div style={{ marginTop: 12, borderTop: "1px solid #e2e8f0", paddingTop: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>📄 Raw Extracted Text (Copy & Paste Reference)</span>
+            {scanResult && scanResult.items && scanResult.items.length > 0 ? (
+              <div className="extractedTableContainer" style={{ marginTop: 16, background: "#0a0f1d", color: "#f8fafc", borderRadius: 8, padding: "16px 20px", border: "1px solid #1e293b" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <h3 style={{ margin: 0, textTransform: "uppercase", fontSize: 13, fontWeight: "bold", letterSpacing: "0.05em", color: "#94a3b8" }}>
+                    {scanResult.subject || billDetails.subject || "EXTRACTED ITEMS"}
+                  </h3>
                   <button 
                     onClick={() => {
-                      navigator.clipboard.writeText(rawExtractedText);
-                      alert("Copied to clipboard!");
+                      const tsv = scanResult.items.map((item: any) => 
+                        `${item.particulars || item.name || ""}\t${item.size || ""}\t${item.quantity || ""}\t${item.rate || ""}\t${item.amount || ""}`
+                      ).join("\n");
+                      navigator.clipboard.writeText(tsv);
+                      alert("Table copied to clipboard!");
                     }}
-                    style={{ padding: "2px 6px", fontSize: 10, background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}
+                    style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                    title="Copy entire table"
                   >
-                    Copy Text
+                    <Copy size={15} />
                   </button>
                 </div>
-                <textarea
-                  readOnly
-                  value={rawExtractedText}
-                  style={{ width: "100%", height: 100, fontFamily: "monospace", fontSize: 11, padding: 6, borderRadius: 6, border: "1px solid #cbd5e1", background: "#f8fafc", resize: "vertical", color: "#334155" }}
-                />
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid #1e293b", color: "#64748b" }}>
+                      <th style={{ padding: "8px 0", fontWeight: "600" }}>Item</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600" }}>Size</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600" }}>Area/Qty</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600", textAlign: "right" }}>Rate (₹)</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600", textAlign: "right" }}>Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scanResult.items.map((item: any, idx: number) => {
+                      const qtyVal = parseFloat(item.quantity) || 1;
+                      const rateVal = parseFloat(item.rate) || 0;
+                      const amtVal = parseFloat(item.amount) || (qtyVal * rateVal);
+                      return (
+                        <tr key={idx} style={{ borderBottom: "1px solid #0f172a" }}>
+                          <td style={{ padding: "10px 0", color: "#cbd5e1" }}>{item.particulars || item.name}</td>
+                          <td style={{ padding: "10px 0", color: "#cbd5e1" }}>{item.size || "—"}</td>
+                          <td style={{ padding: "10px 0", color: "#cbd5e1" }}>
+                            {item.quantity}{item.size ? " Sq.ft" : ""}
+                          </td>
+                          <td style={{ padding: "10px 0", textAlign: "right", color: "#cbd5e1" }}>{item.rate}</td>
+                          <td style={{ padding: "10px 0", textAlign: "right", color: "#cbd5e1", fontWeight: "600" }}>
+                            {amtVal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
+            ) : (
+              rawExtractedText && (
+                <div style={{ marginTop: 12, borderTop: "1px solid #e2e8f0", paddingTop: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>📄 Raw Extracted Text (Copy & Paste Reference)</span>
+                    <button 
+                      onClick={() => {
+                        navigator.clipboard.writeText(rawExtractedText);
+                        alert("Copied to clipboard!");
+                      }}
+                      style={{ padding: "2px 6px", fontSize: 10, background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}
+                    >
+                      Copy Text
+                    </button>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={rawExtractedText}
+                    style={{ width: "100%", height: 100, fontFamily: "monospace", fontSize: 11, padding: 6, borderRadius: 6, border: "1px solid #cbd5e1", background: "#f8fafc", resize: "vertical", color: "#334155" }}
+                  />
+                </div>
+              )
             )}
           </div>
 
