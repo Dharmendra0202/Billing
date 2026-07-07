@@ -68,6 +68,7 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
   const [selectedImage, setSelectedImage]             = useState<string | null>(null);
   const [isScanning, setIsScanning]                   = useState(false);
   const [scanStatus, setScanStatus]                   = useState("");
+  const [rawExtractedText, setRawExtractedText]       = useState("");
   const [applyInchConversion, setApplyInchConversion] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -165,9 +166,11 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
     if (!selectedImage) { setScanStatus("Upload a file first."); return; }
     setIsScanning(true);
     setScanStatus("🔍 AI is reading the bill… (10–30 sec)");
+    setRawExtractedText("");
     try {
       const ai  = new AIService("", "ollama");
       const raw = await ai.extractBillFromImage(selectedImage);
+      setRawExtractedText(raw);
       const data = safeParseJSON(raw);
       if (!data.items?.length) { setScanStatus("⚠️ No items found. Try a clearer image."); return; }
 
@@ -504,6 +507,28 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                 : <><ScanLine size={15} /> Scan Bill</>}
             </button>
             {scanStatus && <p className="statusText">{scanStatus}</p>}
+            
+            {rawExtractedText && (
+              <div style={{ marginTop: 12, borderTop: "1px solid #e2e8f0", paddingTop: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>📄 Raw Extracted Text (Copy & Paste Reference)</span>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(rawExtractedText);
+                      alert("Copied to clipboard!");
+                    }}
+                    style={{ padding: "2px 6px", fontSize: 10, background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Copy Text
+                  </button>
+                </div>
+                <textarea
+                  readOnly
+                  value={rawExtractedText}
+                  style={{ width: "100%", height: 100, fontFamily: "monospace", fontSize: 11, padding: 6, borderRadius: 6, border: "1px solid #cbd5e1", background: "#f8fafc", resize: "vertical", color: "#334155" }}
+                />
+              </div>
+            )}
           </div>
 
           {/* 3. Bill Details */}
