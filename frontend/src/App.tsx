@@ -6,7 +6,7 @@ import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader, initialTables } from "./data/initialBill";
-import { money } from "./lib/billMath";
+import { money, parseSize } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
 import type { BillDetails, BillTable, HeaderTemplate } from "./types";
@@ -62,26 +62,7 @@ function recalc(rows: EditorRow[]): EditorRow[] {
   });
 }
 
-function parseSize(size: string): number {
-  const clean = size.trim();
-  if (!clean) return 1; // empty = 1 so amount = rate directly
 
-  // Split on x / * / × to get individual dimension parts
-  const rawParts = clean.split(/[x*×]/i).map(p => p.trim()).filter(Boolean);
-
-  if (rawParts.length >= 2) {
-    // Convert each part through the inch chart, then multiply
-    const converted = rawParts.map(part => {
-      const c = convertAllPointValues(part);
-      return parseFloat(c) || 0;
-    });
-    return Math.round(converted.reduce((a, b) => a * b, 1) * 10000) / 10000;
-  }
-
-  // Single value — convert then parse
-  const converted = convertAllPointValues(clean);
-  return parseFloat(converted) || 1;
-}
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
@@ -382,8 +363,8 @@ export function App() {
                   <th>Particulars</th>
                   <th style={{ width: 120 }}>Size</th>
                   <th style={{ width: 100 }} className="thRight">Quantity</th>
-                  <th style={{ width: 100 }} className="thRight">Rate</th>
-                  <th style={{ width: 110 }} className="thRight">Amount (₹)</th>
+                  <th style={{ width: 100 }} className="thCenter">Rate</th>
+                  <th style={{ width: 110 }} className="thCenter">Amount</th>
                   <th style={{ width: 36 }}></th>
                 </tr>
               </thead>
@@ -422,7 +403,7 @@ export function App() {
                         return (
                           <small className="sizeHint">
                             {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
-                            {row.size.match(/[x*×]/i) && <span>= {parsed}</span>}
+                            {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
                           </small>
                         );
                       })()}
@@ -439,10 +420,10 @@ export function App() {
                         onFocus={() => setSelectedRowId(row.id)}
                       />
                     </td>
-                    <td className="tdRight">
+                    <td className="tdCenter">
                       <input
                         className="billCell"
-                        style={{ textAlign: "right" }}
+                        style={{ textAlign: "center" }}
                         type="number"
                         min={0}
                         value={row.rate || ""}
@@ -454,7 +435,7 @@ export function App() {
                     <td className="tdAmount">
                       <input
                         className="billCell"
-                        style={{ textAlign: "right", background: "transparent" }}
+                        style={{ textAlign: "center", background: "transparent" }}
                         type="number"
                         min={0}
                         value={row.amount || ""}

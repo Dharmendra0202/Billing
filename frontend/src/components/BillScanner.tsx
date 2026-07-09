@@ -7,6 +7,7 @@ import { useState, useRef, useMemo, useEffect } from "react";
 import { AIService } from "../lib/aiService";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "../lib/documentExport";
 import { convertAllPointValues } from "../lib/inchConversion";
+import { parseSize, money, formatNumber } from "../lib/billMath";
 import type { HeaderTemplate, BillDetails } from "../types";
 import { initialBillDetails } from "../data/initialBill";
 import * as pdfjsLib from "pdfjs-dist";
@@ -35,12 +36,6 @@ type ChatMsg = {
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function parseSize(size: string): number {
-  const clean = size.trim();
-  const parts = clean.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
-  if (parts.length >= 2) return parts.reduce((a, b) => a * b, 1);
-  return parseFloat(clean) || 1;
-}
 
 function calcAmount(quantity: number, rate: number): number {
   return Math.round(quantity * rate * 100) / 100;
@@ -567,9 +562,9 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                     <tr style={{ borderBottom: "1px solid #1e293b", color: "#64748b" }}>
                       <th style={{ padding: "8px 0", fontWeight: "600" }}>Item</th>
                       <th style={{ padding: "8px 0", fontWeight: "600" }}>Size</th>
-                      <th style={{ padding: "8px 0", fontWeight: "600" }}>Area/Qty</th>
-                      <th style={{ padding: "8px 0", fontWeight: "600", textAlign: "right" }}>Rate (₹)</th>
-                      <th style={{ padding: "8px 0", fontWeight: "600", textAlign: "right" }}>Amount (₹)</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600" }}>Area/Quantity</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600", textAlign: "center" }}>Rate</th>
+                      <th style={{ padding: "8px 0", fontWeight: "600", textAlign: "right" }}>Amount</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -584,9 +579,11 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                           <td style={{ padding: "10px 0", color: "#cbd5e1" }}>
                             {item.quantity}{item.size ? " Sq.ft" : ""}
                           </td>
-                          <td style={{ padding: "10px 0", textAlign: "right", color: "#cbd5e1" }}>{item.rate}</td>
+                          <td style={{ padding: "10px 0", textAlign: "center", color: "#cbd5e1" }}>
+                            {rateVal > 0 ? formatNumber(rateVal) : "—"}
+                          </td>
                           <td style={{ padding: "10px 0", textAlign: "right", color: "#cbd5e1", fontWeight: "600" }}>
-                            {amtVal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {money(amtVal)}
                           </td>
                         </tr>
                       );
@@ -763,9 +760,9 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                     <th style={{ width: 32 }}>Sr</th>
                     <th>Particulars</th>
                     <th style={{ width: 86 }}>Size</th>
-                    <th style={{ width: 70 }}>Qty</th>
-                    <th style={{ width: 78 }}>Rate</th>
-                    <th style={{ width: 88 }}>Amount ₹</th>
+                    <th style={{ width: 70 }}>Quantity</th>
+                    <th style={{ width: 78, textAlign: "center" }}>Rate</th>
+                    <th style={{ width: 88, textAlign: "center" }}>Amount</th>
                     <th style={{ width: 28 }}></th>
                   </tr>
                 </thead>
@@ -801,14 +798,14 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                           onFocus={() => setSelectedRowId(row.id)} />
                       </td>
                       <td>
-                        <input className="cellInput cellRight" type="number"
+                        <input className="cellInput cellCenter" type="number"
                           value={row.rate || ""}
                           onChange={e => updateRow(row.id, "rate", e.target.value)}
                           placeholder="0"
                           onFocus={() => setSelectedRowId(row.id)} />
                       </td>
                       <td>
-                        <input className="cellInput cellRight amountCell" type="number"
+                        <input className="cellInput cellCenter amountCell" type="number"
                           value={row.amount || ""}
                           onChange={e => setRows(prev => prev.map(r =>
                             r.id === row.id ? { ...r, amount: parseFloat(e.target.value) || 0 } : r

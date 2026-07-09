@@ -425,7 +425,7 @@ input:focus, textarea:focus, select:focus {
 
 .billTable tbody td.tdRight { text-align: right; }
 .billTable tbody td.tdCenter { text-align: center; }
-.billTable tbody td.tdAmount { background: #fefce8; font-weight: 600; text-align: right; }
+.billTable tbody td.tdAmount { background: #fefce8; font-weight: 600; text-align: center; }
 
 .billCell {
   width: 100%;
@@ -603,13 +603,13 @@ input:focus, textarea:focus, select:focus {
 .pbTable td.pbSrCell { text-align: center; width: 50px; }
 .pbTable td.pbParticularsCell { }
 .pbTable td.pbSizeCell { text-align: center; white-space: nowrap; font-size: 10px; }
-.pbTable td.pbRateCell { text-align: right; white-space: nowrap; }
-.pbTable td.pbAmtCell { text-align: right; font-weight: 600; white-space: nowrap; }
+.pbTable td.pbRateCell { text-align: center; white-space: nowrap; }
+.pbTable td.pbAmtCell { text-align: center; font-weight: 600; white-space: nowrap; }
 .pbTable th.pbThSr { width: 50px; }
 .pbTable th.pbThParticulars { }
 .pbTable th.pbThSize { width: 80px; }
-.pbTable th.pbThRate { width: 72px; text-align: right; }
-.pbTable th.pbThAmt { width: 80px; text-align: right; }
+.pbTable th.pbThRate { width: 72px; text-align: center; }
+.pbTable th.pbThAmt { width: 80px; text-align: center; }
 .pbSizeRaw { font-size: 10px; color: #374151; }
 .pbSizeCalc { font-size: 9px; color: #6b7280; display: block; }
 .pbSizeConverted { font-size: 9px; color: #1a56db; display: block; font-style: italic; }
@@ -911,6 +911,7 @@ input:focus, textarea:focus, select:focus {
 }
 .cellTextarea:focus { border-color: #3b82f6; background: #fff; outline: none; }
 .cellRight { text-align: right; }
+.cellCenter { text-align: center; }
 .amountCell { background: #fefce8; font-weight: 600; }
 .tdCenter { text-align: center; font-weight: 600; color: #475569; }
 .tdRight { text-align: right; padding-right: 8px; }

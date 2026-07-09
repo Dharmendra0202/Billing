@@ -1,24 +1,33 @@
 import { HyperFormula } from "hyperformula";
 import type { BillTable } from "../types";
+import { convertAllPointValues } from "./inchConversion";
 
 type Workbook = {
   engine: HyperFormula;
   sheetNames: Map<string, string>;
 };
 
+export function formatIndianBillNumber(value: number): string {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "0";
+  if (num % 1 === 0) {
+    return num.toLocaleString('en-IN');
+  } else {
+    return num.toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  }
+}
+
 export function money(value: number) {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 2
-  }).format(Number.isFinite(value) ? value : 0);
+  const num = Number(value);
+  return "₹ " + formatIndianBillNumber(Number.isFinite(num) ? num : 0) + "/-";
 }
 
 export function formatNumber(value: number) {
-  return new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(Number.isFinite(value) ? value : 0);
+  const num = Number(value);
+  return formatIndianBillNumber(Number.isFinite(num) ? num : 0);
 }
 
 
@@ -186,3 +195,40 @@ export function grandTotal(tables: BillTable[]) {
     return amountColumn ? sum + columnTotal(table, amountColumn.id, tables) : sum;
   }, 0);
 }
+
+export function parseSize(size: string): number {
+  const clean = size.trim();
+  if (!clean) return 1;
+
+  // Convert point notation values first (e.g. 5.6 -> 5.50)
+  const converted = convertAllPointValues(clean);
+
+  // Replace multiplication characters with standard *
+  let sanitized = converted
+    .replace(/[x×]/gi, '*')
+    // Remove any characters that are not digits, operators, dots, parenthesis, or spaces
+    .replace(/[^0-9+\-*/().\s]/g, '')
+    .trim();
+
+  if (!sanitized) return 1;
+
+  try {
+    if (/^[0-9+\-*/().\s]+$/.test(sanitized)) {
+      // Use Function constructor to evaluate safely
+      const result = new Function(`return (${sanitized})`)();
+      const parsedResult = parseFloat(result);
+      return Number.isFinite(parsedResult) ? parsedResult : 1;
+    }
+  } catch (e) {
+    console.error("Math evaluation failed for:", sanitized, e);
+  }
+
+  // Fallback parsing (similar to old parseFloat behavior)
+  const match = sanitized.match(/^[0-9.]+/);
+  if (match) {
+    const val = parseFloat(match[0]);
+    return Number.isFinite(val) ? val : 1;
+  }
+  return 1;
+}
+

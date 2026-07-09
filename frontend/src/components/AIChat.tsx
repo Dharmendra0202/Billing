@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import { AIService, type AIMessage } from "../lib/aiService";
 import type { HeaderTemplate, BillDetails } from "../types";
 import { safeParseJSON } from "../lib/jsonHelper";
+import { parseSize } from "../lib/billMath";
 
 // ── Row / Col types (same as App.tsx) ────────────────────────────────────────
 type ColKind = "text" | "number" | "formula";
@@ -21,14 +22,6 @@ type EditorRow = { id: string; cells: Record<string, string> };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).slice(2, 9); }
-
-function parseSize(val: string): number {
-  const clean = val.trim();
-  if (!clean) return 1;
-  const parts = clean.split(/[x*×]/i).map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
-  if (parts.length >= 2) return parts.reduce((a, b) => a * b, 1);
-  return parseFloat(clean) || 1;
-}
 
 function computeAmount(row: EditorRow, cols: ColDef[]): number {
   const qtyCol = cols.find(c => c.isQuantity);

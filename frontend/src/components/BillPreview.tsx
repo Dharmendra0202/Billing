@@ -122,7 +122,7 @@ export function BillPreview({ header, rows, billDetails }: Props) {
             <th className="pbThSize">Size</th>
             <th className="pbThQty">Quantity</th>
             <th className="pbThRate">Rate</th>
-            <th className="pbThAmt">Amount (₹)</th>
+            <th className="pbThAmt">Amount</th>
           </tr>
         </thead>
         <tbody>

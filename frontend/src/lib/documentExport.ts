@@ -409,7 +409,7 @@ export function convertExtractedDataToTables(data: ExtractedBillData): {
     title: "Items",
     columns: [
       { id: nameColId, label: "Item", kind: "text" },
-      { id: qtyColId, label: "Qty", kind: "number" },
+      { id: qtyColId, label: "Quantity", kind: "number" },
       { id: rateColId, label: "Rate", kind: "number" },
       { id: amountColId, label: "Amount", kind: "number" }
     ],
@@ -463,11 +463,7 @@ Rules:
 // ============================================
 
 const formatIndianCurrency = (amount: number): string => {
-  return `₹ ${amount.toLocaleString('en-IN')}`;
-};
-
-const formatPDFCurrency = (amount: number): string => {
-  return `Rs. ${amount.toLocaleString('en-IN')}`;
+  return `₹ ${formatIndianNumber(amount)}/-`;
 };
 
 const formatIndianNumber = (amount: number): string => {
@@ -623,9 +619,9 @@ export async function exportProfessionalPDF(
   doc.text("Sr. No", margin + colWidths[0] / 2, yBaseHeader, { align: "center" });
   doc.text("Particulars", margin + colWidths[0] + 2, yBaseHeader, { align: "left" });
   doc.text("Size", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBaseHeader, { align: "center" });
-  doc.text("Qty", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBaseHeader, { align: "center" });
-  doc.text("Rate", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yBaseHeader, { align: "right" });
-  doc.text("Amount (Rs.)", pageWidth - margin - 2, yBaseHeader, { align: "right" });
+  doc.text("Quantity", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBaseHeader, { align: "center" });
+  doc.text("Rate", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2, yBaseHeader, { align: "center" });
+  doc.text("Amount", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2, yBaseHeader, { align: "center" });
   
   // Draw header top and bottom lines
   doc.setDrawColor(0);
@@ -677,8 +673,8 @@ export async function exportProfessionalPDF(
     
     doc.text(size || "—", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBase, { align: "center" });
     doc.text(quantity > 0 ? String(quantity) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBase, { align: "center" });
-    doc.text(rate > 0 ? formatIndianNumber(rate) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] - 2, yBase, { align: "right" });
-    doc.text(amount > 0 ? formatIndianNumber(amount) : "—", pageWidth - margin - 2, yBase, { align: "right" });
+    doc.text(rate > 0 ? formatIndianNumber(rate) : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2, yBase, { align: "center" });
+    doc.text(amount > 0 ? "₹ " + formatIndianNumber(amount) + "/-" : "—", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2, yBase, { align: "center" });
     
     yPos += rowHeight;
     // Draw horizontal grid line below the row
@@ -701,7 +697,7 @@ export async function exportProfessionalPDF(
   doc.setFont("times", "bold");
   doc.setFontSize(11);
   doc.text("Total", verticalX[5] - 2, yBaseTotals, { align: "right" });
-  doc.text(formatIndianNumber(total), pageWidth - margin - 2, yBaseTotals, { align: "right" });
+  doc.text("₹ " + formatIndianNumber(total) + "/-", pageWidth - margin - 2, yBaseTotals, { align: "right" });
   doc.line(margin, yPos + totalsRowHeight, pageWidth - margin, yPos + totalsRowHeight);
   
   // Advance Row
@@ -710,7 +706,7 @@ export async function exportProfessionalPDF(
   doc.setFont("times", "normal");
   doc.setFontSize(11);
   doc.text("Advance", verticalX[5] - 2, yBaseTotals, { align: "right" });
-  doc.text(formatIndianNumber(billDetails.advance), pageWidth - margin - 2, yBaseTotals, { align: "right" });
+  doc.text("₹ " + formatIndianNumber(billDetails.advance) + "/-", pageWidth - margin - 2, yBaseTotals, { align: "right" });
   doc.line(margin, yPos + totalsRowHeight, pageWidth - margin, yPos + totalsRowHeight);
   
   // Balance Row
@@ -719,7 +715,7 @@ export async function exportProfessionalPDF(
   doc.setFont("times", "bold");
   doc.setFontSize(11);
   doc.text("Balance", verticalX[5] - 2, yBaseTotals, { align: "right" });
-  doc.text(formatIndianNumber(balance), pageWidth - margin - 2, yBaseTotals, { align: "right" });
+  doc.text("₹ " + formatIndianNumber(balance) + "/-", pageWidth - margin - 2, yBaseTotals, { align: "right" });
   doc.line(margin, yPos + totalsRowHeight, pageWidth - margin, yPos + totalsRowHeight);
 
   const totalsEndY = yPos + totalsRowHeight;
@@ -785,24 +781,25 @@ export async function exportProfessionalExcel(
   wsData.push([]);
 
   // Table header
-  wsData.push(["Sr. No", "Particulars", "Size", "Quantity", "Rate", "Amount (₹)"]);
+  wsData.push(["Sr. No", "Particulars", "Size", "Quantity", "Rate", "Amount"]);
 
   // Table rows
   mainTable?.rows.forEach((row, index) => {
+    const amtVal = parseFloat(row.cells.amount) || 0;
     wsData.push([
       row.cells.sr || String(index + 1),
       row.cells.particulars || "",
       row.cells.size || "",
       parseFloat(row.cells.quantity) || 0,
       parseFloat(row.cells.rate) || 0,
-      parseFloat(row.cells.amount) || 0
+      amtVal > 0 ? `₹ ${formatIndianNumber(amtVal)}/-` : ""
     ]);
   });
 
   // Totals
-  wsData.push(["", "", "", "", "Total", total]);
-  wsData.push(["", "", "", "", "Advance", billDetails.advance]);
-  wsData.push(["", "", "", "", "Balance", balance]);
+  wsData.push(["", "", "", "", "Total", total > 0 ? `₹ ${formatIndianNumber(total)}/-` : "₹ 0/-"]);
+  wsData.push(["", "", "", "", "Advance", billDetails.advance > 0 ? `₹ ${formatIndianNumber(billDetails.advance)}/-` : "₹ 0/-"]);
+  wsData.push(["", "", "", "", "Balance", balance > 0 ? `₹ ${formatIndianNumber(balance)}/-` : "₹ 0/-"]);
   wsData.push([]);
 
   // Note
@@ -946,9 +943,9 @@ export async function exportProfessionalWord(
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Sr. No", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Particulars", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Size", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Quantity", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Rate", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount (₹)", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Quantity", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Rate", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
       ]
     })
   );
@@ -986,9 +983,9 @@ export async function exportProfessionalWord(
             ]
           }),
           new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
-          new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? String(qtyVal) : "—", alignment: AlignmentType.RIGHT })] }),
-          new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? formatIndianNumber(rateVal) : "—", alignment: AlignmentType.RIGHT })] }),
-          new TableCell({ children: [new Paragraph({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", alignment: AlignmentType.RIGHT })] })
+          new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? String(qtyVal) : "—", alignment: AlignmentType.CENTER })] }),
+          new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? formatIndianNumber(rateVal) : "—", alignment: AlignmentType.CENTER })] }),
+          new TableCell({ children: [new Paragraph({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", alignment: AlignmentType.CENTER })] })
         ]
       })
     );
