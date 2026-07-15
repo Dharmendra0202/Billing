@@ -22,11 +22,11 @@ button:disabled { cursor: not-allowed; opacity: 0.65; }
 
 h1, h2, h3, p { margin: 0; }
 
-/* ── App Shell: 3-column grid ───────────────────────────────────────────────── */
+/* ── App Shell: 5-column grid ───────────────────────────────────────────────── */
 .appShell {
   display: grid;
   grid-template-rows: 52px 1fr;
-  grid-template-columns: 320px 1fr 400px;
+  grid-template-columns: 320px 6px 1fr 6px 400px;
   min-height: 100vh;
   background: #f0f2f5;
 }
@@ -123,17 +123,119 @@ h1, h2, h3, p { margin: 0; }
   grid-column: 1;
   background: #fff;
   border-right: 1px solid #e2e8f0;
-  overflow-y: auto;
+  height: calc(100vh - 52px);
+  overflow: hidden;
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
+
+/* ── Left Panel Content (Scrollable Details) ─────────────────────────────────── */
+.leftPanelContent {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-right: 4px;
+}
+
+/* ── Left Panel Tabs Switcher ────────────────────────────────────────────────── */
+.leftPanelTabs {
+  display: flex;
+  background: #f1f5f9;
+  padding: 4px;
+  border-radius: 8px;
+  gap: 4px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.leftPanelTab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #64748b;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.leftPanelTab:hover {
+  color: #1e293b;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.leftPanelTab.active {
+  background: #ffffff;
+  color: #10b981; /* Matches scanner green theme */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.leftPanelScannerWrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  flex: 1;
+}
+
+/* Override scanner styles when embedded in left panel to keep switcher fixed and only scroll content */
+.leftPanelScannerWrap .billScannerPanel {
+  max-height: none;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.leftPanelScannerWrap .scannerContent {
+  overflow-y: auto;
+  flex: 1;
+  padding: 0 4px 0 0;
+  gap: 12px;
+}
+
+.leftPanelScannerWrap .scannerHeader {
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+}
+
+.leftPanelScannerWrap .scannerSection {
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+}
+
+.leftPanelScannerWrap .liveTableWrap {
+  margin: 0 -12px;
+}
+
+.leftPanelScannerWrap .aiChatPanelInner {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  height: 100%;
+}
+
+
 
 /* ── Center Panel ───────────────────────────────────────────────────────────── */
 .centerPanel {
   grid-row: 2;
-  grid-column: 2;
+  grid-column: 3;
   padding: 16px;
   overflow-y: auto;
   display: flex;
@@ -145,7 +247,7 @@ h1, h2, h3, p { margin: 0; }
 /* ── Right Panel ────────────────────────────────────────────────────────────── */
 .rightPanel {
   grid-row: 2;
-  grid-column: 3;
+  grid-column: 5;
   background: #fff;
   border-left: 1px solid #e2e8f0;
   overflow-y: auto;
@@ -153,6 +255,40 @@ h1, h2, h3, p { margin: 0; }
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* ── Resizer Handles ────────────────────────────────────────────────────────── */
+.resizerHandle {
+  grid-row: 2;
+  width: 6px;
+  background: #e2e8f0;
+  cursor: col-resize;
+  position: relative;
+  transition: background 0.15s ease;
+  z-index: 5;
+  user-select: none;
+}
+
+.resizerHandle:hover,
+.resizerHandle.resizing {
+  background: #3b82f6; /* Blue highlight */
+}
+
+.resizerHandle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 24px;
+  background: #cbd5e1;
+  border-radius: 1px;
+}
+
+.resizerHandle:hover::after,
+.resizerHandle.resizing::after {
+  background: #ffffff;
 }
 
 /* ── Card / Section panel ───────────────────────────────────────────────────── */
@@ -349,7 +485,10 @@ input:focus, textarea:focus, select:focus {
   border-top: 1px solid #e2e8f0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .headerEditFields label { font-size: 11px; margin-bottom: 6px; }
@@ -1093,16 +1232,19 @@ input:focus, textarea:focus, select:focus {
 }
 
 @media (max-width: 1280px) {
-  .appShell { grid-template-columns: 280px 1fr 360px; }
+  .appShell { grid-template-columns: 280px 6px 1fr 6px 360px; }
 }
 
 @media (max-width: 900px) {
   .appShell {
-    grid-template-columns: 1fr;
-    grid-template-rows: 52px auto auto auto;
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 52px auto auto auto !important;
+  }
+  .resizerHandle {
+    display: none !important;
   }
   .leftPanel, .centerPanel, .rightPanel {
-    grid-column: 1;
+    grid-column: 1 !important;
     border: none;
     border-top: 1px solid #e2e8f0;
   }

@@ -88,7 +88,56 @@ export function App() {
 
   const [billTitle, setBillTitle] = useState("New Bill");
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [leftTab, setLeftTab] = useState<"details" | "scanner">("details");
   const [dbPanelOpen, setDbPanelOpen] = useState(false);
+  const [leftWidth, setLeftWidth] = useState(320);
+  const [rightWidth, setRightWidth] = useState(400);
+  const [isResizingLeft, setIsResizingLeft] = useState(false);
+  const [isResizingRight, setIsResizingRight] = useState(false);
+
+  const startResizingLeft = (mouseDownEvent: React.MouseEvent) => {
+    mouseDownEvent.preventDefault();
+    setIsResizingLeft(true);
+    const startX = mouseDownEvent.clientX;
+    const startWidth = leftWidth;
+
+    const handleMouseMove = (mouseMoveEvent: MouseEvent) => {
+      const deltaX = mouseMoveEvent.clientX - startX;
+      const newWidth = Math.max(240, Math.min(500, startWidth + deltaX));
+      setLeftWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeft(false);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const startResizingRight = (mouseDownEvent: React.MouseEvent) => {
+    mouseDownEvent.preventDefault();
+    setIsResizingRight(true);
+    const startX = mouseDownEvent.clientX;
+    const startWidth = rightWidth;
+
+    const handleMouseMove = (mouseMoveEvent: MouseEvent) => {
+      const deltaX = startX - mouseMoveEvent.clientX;
+      const newWidth = Math.max(300, Math.min(600, startWidth + deltaX));
+      setRightWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRight(false);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
 
   // Legacy tables state for AIChat compatibility
   const [tables, setTables] = useState<BillTable[]>(() => {
@@ -185,7 +234,7 @@ export function App() {
   };
 
   return (
-    <div className="appShell">
+    <div className="appShell" style={{ gridTemplateColumns: `${leftWidth}px 6px 1fr 6px ${rightWidth}px` }}>
       {/* ── Top Header Bar ──────────────────────────────────────────────────── */}
       <header className="topHeader">
         <div className="topHeaderBrand">
@@ -203,7 +252,7 @@ export function App() {
           <button className="hdrBtn" onClick={() => setDbPanelOpen(true)} title="Cloud Database">
             <Database size={16} /> Cloud Db
           </button>
-          <button className="hdrBtn" onClick={() => setScannerOpen(true)}>
+          <button className="hdrBtn" onClick={() => setLeftTab("scanner")}>
             <Scan size={16} /> Scan Bill
           </button>
           <button className="hdrBtn" onClick={reset}>
@@ -219,89 +268,122 @@ export function App() {
       <aside className="leftPanel">
         <HeaderEditor header={header} onChange={setHeader} />
 
-        {/* Bill Details Form */}
-        <div className="card billDetailsForm">
-          <div className="cardHeader">
-            <span className="cardTitle">Bill Details</span>
-          </div>
+        <div className="leftPanelTabs">
+          <button 
+            className={`leftPanelTab ${leftTab === "details" ? "active" : ""}`}
+            onClick={() => setLeftTab("details")}
+          >
+            Bill Details
+          </button>
+          <button 
+            className={`leftPanelTab ${leftTab === "scanner" ? "active" : ""}`}
+            onClick={() => setLeftTab("scanner")}
+          >
+            Scanner
+          </button>
+        </div>
 
-          <label>
-            Date
-            <input type="text" value={billDetails.date} onChange={e => updateDetail("date", e.target.value)} />
-          </label>
-          
-          {billDetails.showClientDetails !== false && (
-            <>
+        {leftTab === "details" ? (
+          <div className="leftPanelContent">
+            {/* Bill Details Form */}
+            <div className="card billDetailsForm">
+              <div className="cardHeader">
+                <span className="cardTitle">Bill Details</span>
+              </div>
+
               <label>
-                Client Name (To)
-                <input value={billDetails.clientName} onChange={e => updateDetail("clientName", e.target.value)} placeholder="Client / Party name" />
+                Date
+                <input type="text" value={billDetails.date} onChange={e => updateDetail("date", e.target.value)} />
               </label>
-              {(billDetails.showClientAddress !== false) && (
-                <label>
-                  Client Address
-                  <textarea value={billDetails.clientAddress} onChange={e => updateDetail("clientAddress", e.target.value)} placeholder="Client address" style={{ minHeight: 54 }} />
+              
+              {billDetails.showClientDetails !== false && (
+                <>
+                  <label>
+                    Client Name (To)
+                    <input value={billDetails.clientName} onChange={e => updateDetail("clientName", e.target.value)} placeholder="Client / Party name" />
+                  </label>
+                  {(billDetails.showClientAddress !== false) && (
+                    <label>
+                      Client Address
+                      <textarea value={billDetails.clientAddress} onChange={e => updateDetail("clientAddress", e.target.value)} placeholder="Client address" style={{ minHeight: 54 }} />
+                    </label>
+                  )}
+                </>
+              )}
+
+              <label>
+                Subject
+                <input value={billDetails.subject} onChange={e => updateDetail("subject", e.target.value)} />
+              </label>
+              <label>
+                Advance (₹)
+                <input
+                  type="number"
+                  min={0}
+                  value={billDetails.advance || ""}
+                  onChange={e => updateDetail("advance", parseFloat(e.target.value) || 0)}
+                  placeholder="0"
+                />
+              </label>
+            </div>
+
+            {/* Toggles */}
+            <div className="card">
+              <div className="cardHeader">
+                <span className="cardTitle">Optional Sections</span>
+              </div>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showClientDetails !== false} onChange={e => updateDetail("showClientDetails", e.target.checked)} />
+                Show Client Details (To)
+              </label>
+              {billDetails.showClientDetails !== false && (
+                <label className="toggleRow" style={{ marginLeft: 16 }}>
+                  <input type="checkbox" checked={billDetails.showClientAddress !== false} onChange={e => updateDetail("showClientAddress", e.target.checked)} />
+                  Show Client Address
                 </label>
               )}
-            </>
-          )}
-
-          <label>
-            Subject
-            <input value={billDetails.subject} onChange={e => updateDetail("subject", e.target.value)} />
-          </label>
-          <label>
-            Advance (₹)
-            <input
-              type="number"
-              min={0}
-              value={billDetails.advance || ""}
-              onChange={e => updateDetail("advance", parseFloat(e.target.value) || 0)}
-              placeholder="0"
-            />
-          </label>
-        </div>
-
-        {/* Toggles */}
-        <div className="card">
-          <div className="cardHeader">
-            <span className="cardTitle">Optional Sections</span>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showGST !== false} onChange={e => updateDetail("showGST", e.target.checked)} />
+                Show GST Number
+              </label>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showNote} onChange={e => updateDetail("showNote", e.target.checked)} />
+                Show Note section
+              </label>
+              {billDetails.showNote && (
+                <label>
+                  Note text
+                  <textarea value={billDetails.note} onChange={e => updateDetail("note", e.target.value)} style={{ minHeight: 54 }} />
+                </label>
+              )}
+              <label className="toggleRow" style={{ marginBottom: billDetails.showSignature ? 8 : 0 }}>
+                <input type="checkbox" checked={billDetails.showSignature} onChange={e => updateDetail("showSignature", e.target.checked)} />
+                Show Signature section
+              </label>
+              {billDetails.showSignature && (
+                <label style={{ marginBottom: 0 }}>
+                  Proprietor Name
+                  <input value={billDetails.proprietorName} onChange={e => updateDetail("proprietorName", e.target.value)} placeholder="Proprietor Name" />
+                </label>
+              )}
+            </div>
           </div>
-          <label className="toggleRow">
-            <input type="checkbox" checked={billDetails.showClientDetails !== false} onChange={e => updateDetail("showClientDetails", e.target.checked)} />
-            Show Client Details (To)
-          </label>
-          {billDetails.showClientDetails !== false && (
-            <label className="toggleRow" style={{ marginLeft: 16 }}>
-              <input type="checkbox" checked={billDetails.showClientAddress !== false} onChange={e => updateDetail("showClientAddress", e.target.checked)} />
-              Show Client Address
-            </label>
-          )}
-          <label className="toggleRow">
-            <input type="checkbox" checked={billDetails.showGST !== false} onChange={e => updateDetail("showGST", e.target.checked)} />
-            Show GST Number
-          </label>
-          <label className="toggleRow">
-            <input type="checkbox" checked={billDetails.showNote} onChange={e => updateDetail("showNote", e.target.checked)} />
-            Show Note section
-          </label>
-          {billDetails.showNote && (
-            <label>
-              Note text
-              <textarea value={billDetails.note} onChange={e => updateDetail("note", e.target.value)} style={{ minHeight: 54 }} />
-            </label>
-          )}
-          <label className="toggleRow" style={{ marginBottom: billDetails.showSignature ? 8 : 0 }}>
-            <input type="checkbox" checked={billDetails.showSignature} onChange={e => updateDetail("showSignature", e.target.checked)} />
-            Show Signature section
-          </label>
-          {billDetails.showSignature && (
-            <label style={{ marginBottom: 0 }}>
-              Proprietor Name
-              <input value={billDetails.proprietorName} onChange={e => updateDetail("proprietorName", e.target.value)} placeholder="Proprietor Name" />
-            </label>
-          )}
-        </div>
+        ) : (
+          <div className="leftPanelScannerWrap">
+            <BillScanner 
+              header={header} 
+              onHeaderChange={setHeader} 
+              rows={rows}
+              onRowsChange={setRows}
+              billDetails={billDetails}
+              onBillDetailsChange={setBillDetails}
+              onClose={() => setLeftTab("details")} 
+            />
+          </div>
+        )}
       </aside>
+
+      <div className={`resizerHandle ${isResizingLeft ? "resizing" : ""}`} onMouseDown={startResizingLeft} />
 
       {/* ── Center Panel ────────────────────────────────────────────────────── */}
       <main className="centerPanel">
@@ -492,6 +574,8 @@ export function App() {
         </div>
       </main>
 
+      <div className={`resizerHandle ${isResizingRight ? "resizing" : ""}`} onMouseDown={startResizingRight} />
+
       {/* ── Right Panel ─────────────────────────────────────────────────────── */}
       <aside className="rightPanel">
         <p className="previewLabel">Live Preview</p>
@@ -559,15 +643,8 @@ export function App() {
         </div>
       )}
 
-      {scannerOpen && (
-        <div className="billScannerOverlay" onClick={e => { if (e.target === e.currentTarget) setScannerOpen(false); }}>
-          <div className="billScannerModal">
-            <BillScanner header={header} onHeaderChange={setHeader} onClose={() => setScannerOpen(false)} />
-          </div>
-        </div>
-      )}
-      {!scannerOpen && (
-        <button className="billScannerToggle" onClick={() => setScannerOpen(true)} title="Scan Bill with AI">
+      {leftTab !== "scanner" && (
+        <button className="billScannerToggle" onClick={() => setLeftTab("scanner")} title="Scan Bill with AI">
           <Scan size={26} />
         </button>
       )}

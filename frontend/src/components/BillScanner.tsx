@@ -53,9 +53,21 @@ type Props = {
   onHeaderChange: (h: HeaderTemplate) => void;
   /** When provided, the scanner is controlled externally (modal mode). */
   onClose?: () => void;
+  rows: ScannedRow[];
+  onRowsChange: React.Dispatch<React.SetStateAction<ScannedRow[]>>;
+  billDetails: BillDetails;
+  onBillDetailsChange: React.Dispatch<React.SetStateAction<BillDetails>>;
 };
 
-export function BillScanner({ header, onHeaderChange, onClose }: Props) {
+export function BillScanner({
+  header,
+  onHeaderChange,
+  onClose,
+  rows: propsRows,
+  onRowsChange: propsOnRowsChange,
+  billDetails: propsBillDetails,
+  onBillDetailsChange: propsOnBillDetailsChange
+}: Props) {
   const [isOpen, setIsOpen]       = useState(false);
   const [activeTab, setActiveTab] = useState<"scanner" | "ai">("scanner");
 
@@ -68,13 +80,11 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
   const [applyInchConversion, setApplyInchConversion] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // table rows
-  const [rows, setRows] = useState<ScannedRow[]>([
-    { id: uid(), sr: 1, particulars: "", size: "1", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }
-  ]);
-
-  // bill details
-  const [billDetails, setBillDetails] = useState<BillDetails>(initialBillDetails);
+  // bind local variables to props for compatibility
+  const rows = propsRows;
+  const setRows = propsOnRowsChange;
+  const billDetails = propsBillDetails;
+  const setBillDetails = propsOnBillDetailsChange;
 
   // AI chat
   const [chatMsgs, setChatMsgs]   = useState<ChatMsg[]>([{
@@ -614,259 +624,6 @@ export function BillScanner({ header, onHeaderChange, onClose }: Props) {
                 </div>
               )
             )}
-          </div>
-
-          {/* 3. Bill Details */}
-          <div className="scannerSection billDetailsSection">
-            <h4>3️⃣ Bill Details</h4>
-            <div className="detailsRow">
-              <label>Date
-                <input type="text" value={billDetails.date}
-                  onChange={e => setBillDetails({ ...billDetails, date: e.target.value })}
-                  placeholder="DD/MM/YYYY" />
-              </label>
-              {billDetails.showClientDetails !== false ? (
-                <label>Client Name
-                  <input type="text" value={billDetails.clientName}
-                    onChange={e => setBillDetails({ ...billDetails, clientName: e.target.value })}
-                    placeholder="Atharv Palace" />
-                </label>
-              ) : (
-                <label>Subject
-                  <input type="text" value={billDetails.subject}
-                    onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
-                </label>
-              )}
-            </div>
-            {billDetails.showClientDetails !== false && (
-              <div className="detailsRow">
-                {billDetails.showClientAddress !== false ? (
-                  <>
-                    <label>Client Address
-                      <textarea value={billDetails.clientAddress}
-                        onChange={e => setBillDetails({ ...billDetails, clientAddress: e.target.value })}
-                        placeholder="Vile Parle East"
-                        rows={2}
-                        className="cellTextarea"
-                        style={{ minHeight: 45, resize: "vertical", padding: "6px 10px" }} />
-                    </label>
-                    <label>Subject
-                      <input type="text" value={billDetails.subject}
-                        onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
-                    </label>
-                  </>
-                ) : (
-                  <label style={{ width: "100%" }}>Subject
-                    <input type="text" value={billDetails.subject}
-                      onChange={e => setBillDetails({ ...billDetails, subject: e.target.value })} />
-                  </label>
-                )}
-              </div>
-            )}
-            <div className="optionTogglesRow">
-              <label className="toggleOption">
-                <input type="checkbox" checked={billDetails.showClientDetails !== false}
-                  onChange={e => setBillDetails({ ...billDetails, showClientDetails: e.target.checked })} />
-                <span>Client Details (To)</span>
-              </label>
-              {billDetails.showClientDetails !== false && (
-                <label className="toggleOption">
-                  <input type="checkbox" checked={billDetails.showClientAddress !== false}
-                    onChange={e => setBillDetails({ ...billDetails, showClientAddress: e.target.checked })} />
-                  <span>Client Address</span>
-                </label>
-              )}
-              <label className="toggleOption">
-                <input type="checkbox" checked={billDetails.showNote}
-                  onChange={e => setBillDetails({ ...billDetails, showNote: e.target.checked })} />
-                <span>Note</span>
-              </label>
-              <label className="toggleOption">
-                <input type="checkbox" checked={billDetails.showSignature}
-                  onChange={e => setBillDetails({ ...billDetails, showSignature: e.target.checked })} />
-                <span>Signature</span>
-              </label>
-            </div>
-            {(billDetails.showNote || billDetails.showSignature) && (
-              <div className="detailsRow" style={{ marginTop: 8 }}>
-                {billDetails.showNote && (
-                  <label>Note Text
-                    <textarea value={billDetails.note}
-                      onChange={e => setBillDetails({ ...billDetails, note: e.target.value })}
-                      placeholder="GST 18% will be provided by the client."
-                      rows={2}
-                      className="cellTextarea"
-                      style={{ minHeight: 45, resize: "vertical" }} />
-                  </label>
-                )}
-                {billDetails.showSignature && (
-                  <label>Proprietor Name
-                    <input type="text" value={billDetails.proprietorName}
-                      onChange={e => setBillDetails({ ...billDetails, proprietorName: e.target.value })}
-                      placeholder="Mr. Dharmendra Vishwakarma" />
-                  </label>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* 4. Live Table */}
-          <div className="scannerSection">
-            <div className="sectionHeader">
-              <h4>4️⃣ Items Table</h4>
-
-              <div className="tableFormattingToolbar" style={{ margin: "0 auto 0 16px" }}>
-                <button 
-                  className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.bold ? 'active' : ''}`}
-                  onClick={toggleBold}
-                  disabled={!selectedRowId}
-                  title="Bold (Ctrl+B)"
-                >
-                  <strong>B</strong>
-                </button>
-                
-                <div className="fontSizeControls">
-                  <button onClick={() => adjustFontSize(-1)} disabled={!selectedRowId} title="Decrease Font Size">-</button>
-                  <span className="fontSizeDisplay">
-                    {selectedRowId ? (rows.find(r => r.id === selectedRowId)?.fontSize || 11) : 11}px
-                  </span>
-                  <button onClick={() => adjustFontSize(1)} disabled={!selectedRowId} title="Increase Font Size">+</button>
-                </div>
-                
-                <div className="alignmentControls">
-                  {(["left", "center", "right"] as const).map(alignVal => (
-                    <button
-                      key={alignVal}
-                      className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.align === alignVal ? 'active' : ''}`}
-                      onClick={() => changeAlignment(alignVal)}
-                      disabled={!selectedRowId}
-                      title={`Align ${alignVal}`}
-                    >
-                      {alignVal === "left" ? "L" : alignVal === "center" ? "C" : "R"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <button className="primaryButton compact" onClick={addRow}>
-                <Plus size={13} /> Add Row
-              </button>
-            </div>
-
-            <div className="liveTableWrap">
-              <table className="liveTable">
-                <thead>
-                  <tr>
-                    <th style={{ width: 32 }}>Sr</th>
-                    <th>Particulars</th>
-                    <th style={{ width: 86 }}>Size</th>
-                    <th style={{ width: 70 }}>Quantity</th>
-                    <th style={{ width: 78, textAlign: "center" }}>Rate</th>
-                    <th style={{ width: 88, textAlign: "center" }}>Amount</th>
-                    <th style={{ width: 28 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map(row => (
-                    <tr key={row.id} style={{ background: selectedRowId === row.id ? "#f8fafc" : undefined }}>
-                      <td className="tdCenter" onFocus={() => setSelectedRowId(row.id)}>{row.sr}</td>
-                      <td>
-                        <textarea className="cellTextarea" value={row.particulars} rows={2}
-                          onChange={e => updateRow(row.id, "particulars", e.target.value)}
-                          placeholder="Item description…"
-                          onFocus={() => setSelectedRowId(row.id)}
-                          style={{
-                            fontWeight: row.bold ? "bold" : "normal",
-                            fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
-                            textAlign: row.align || "left"
-                          }} />
-                      </td>
-                      <td>
-                        <input className="cellInput" type="text" value={row.size}
-                          onChange={e => updateRow(row.id, "size", e.target.value)}
-                          placeholder="e.g. 10x5"
-                          onFocus={() => setSelectedRowId(row.id)} />
-                        {parseSize(row.size) > 0 && (
-                          <small className="sizeCalc">= {parseSize(row.size)}</small>
-                        )}
-                      </td>
-                      <td>
-                        <input className="cellInput cellRight" type="number"
-                          value={row.quantity || ""}
-                          onChange={e => updateRow(row.id, "quantity", e.target.value)}
-                          placeholder="0"
-                          onFocus={() => setSelectedRowId(row.id)} />
-                      </td>
-                      <td>
-                        <input className="cellInput cellCenter" type="number"
-                          value={row.rate || ""}
-                          onChange={e => updateRow(row.id, "rate", e.target.value)}
-                          placeholder="0"
-                          onFocus={() => setSelectedRowId(row.id)} />
-                      </td>
-                      <td>
-                        <input className="cellInput cellCenter amountCell" type="number"
-                          value={row.amount || ""}
-                          onChange={e => setRows(prev => prev.map(r =>
-                            r.id === row.id ? { ...r, amount: parseFloat(e.target.value) || 0 } : r
-                          ))}
-                          placeholder="0"
-                          onFocus={() => setSelectedRowId(row.id)} />
-                      </td>
-                      <td>
-                        <button className="miniButton danger" onClick={() => deleteRow(row.id)}
-                          disabled={rows.length === 1}>
-                          <Trash2 size={12} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="tfootTotal">
-                    <td colSpan={5} className="tdRight"><strong>Total (SUM)</strong></td>
-                    <td className="tdRight totalAmt"><strong>₹ {total.toLocaleString("en-IN")}</strong></td>
-                    <td></td>
-                  </tr>
-                  <tr>
-                    <td colSpan={5} className="tdRight">Advance</td>
-                    <td className="tdRight">
-                      <input className="cellInput cellRight" type="number"
-                        value={billDetails.advance || ""}
-                        onChange={e => setBillDetails({ ...billDetails, advance: parseFloat(e.target.value) || 0 })}
-                        placeholder="0" />
-                    </td>
-                    <td></td>
-                  </tr>
-                  <tr className="tfootBalance">
-                    <td colSpan={5} className="tdRight"><strong>Balance (Total − Advance)</strong></td>
-                    <td className="tdRight balAmt"><strong>₹ {balance.toLocaleString("en-IN")}</strong></td>
-                    <td></td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-            <p className="formulaNote">
-              💡 Amount = Quantity × Rate (auto). Balance = Total − Advance (auto).
-              Use the <strong>AI tab</strong> to edit with natural language.
-            </p>
-          </div>
-
-          {/* 5. Export */}
-          <div className="scannerSection exportSection">
-            <h4>5️⃣ Export</h4>
-            {exportStatus && <p className="statusText">{exportStatus}</p>}
-            <div className="exportButtons">
-              <button className="exportBtn pdf"   disabled={isExporting} onClick={() => doExport("pdf")}>
-                <FileText size={18} /><span>PDF</span>
-              </button>
-              <button className="exportBtn excel" disabled={isExporting} onClick={() => doExport("excel")}>
-                <FileSpreadsheet size={18} /><span>Excel</span>
-              </button>
-              <button className="exportBtn word"  disabled={isExporting} onClick={() => doExport("word")}>
-                <FileType size={18} /><span>Word</span>
-              </button>
-            </div>
           </div>
 
         </div>
