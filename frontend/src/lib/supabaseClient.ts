@@ -63,6 +63,15 @@ export async function saveBillToCloud(bill: {
   advance: number;
   header: any;
   rows: any;
+  note?: string;
+  showNote?: boolean;
+  showSignature?: boolean;
+  proprietorName?: string;
+  showHeader?: boolean;
+  showDate?: boolean;
+  showClientDetails?: boolean;
+  showClientAddress?: boolean;
+  showGST?: boolean;
 }) {
   if (!isSupabaseConfigured()) throw new Error("Supabase is not configured.");
   
@@ -74,7 +83,16 @@ export async function saveBillToCloud(bill: {
     subject: bill.subject,
     advance: bill.advance,
     header: bill.header,
-    rows: bill.rows
+    rows: bill.rows,
+    note: bill.note,
+    showNote: bill.showNote,
+    showSignature: bill.showSignature,
+    proprietorName: bill.proprietorName,
+    showHeader: bill.showHeader,
+    showDate: bill.showDate,
+    showClientDetails: bill.showClientDetails,
+    showClientAddress: bill.showClientAddress,
+    showGST: bill.showGST
   };
   
   if (bill.id) {

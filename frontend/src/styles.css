@@ -579,28 +579,69 @@ input:focus, textarea:focus, select:focus {
 .billCell:focus { border-color: #1a56db; background: #fff; box-shadow: 0 0 0 2px rgba(26,86,219,0.15); }
 
 /* ── Table footer totals ────────────────────────────────────────────────────── */
-.billTable tfoot tr.tfTotal td {
-  background: #f1f5f9;
-  border-top: 2px solid #1e293b;
-  font-weight: 700;
-  padding: 8px 12px;
-  font-size: 13px;
-}
-
-.billTable tfoot tr.tfAdvance td {
-  background: #fff;
+.tableFooterArea {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 16px;
+  background: #f8fafc;
   border-top: 1px solid #e2e8f0;
-  padding: 7px 12px;
-  font-size: 13px;
+  gap: 20px;
 }
 
-.billTable tfoot tr.tfBalance td {
-  background: #dcfce7;
-  border-top: 1px solid #16a34a;
-  font-weight: 700;
-  padding: 8px 12px;
+.tableFooterLeft {
+  flex: 1;
+  max-width: 280px;
+}
+
+.tableFooterRight {
+  display: flex;
+  align-items: flex-end;
+}
+
+.billingSummaryCard {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 0;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.summaryRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 13px;
+  color: #475569;
+}
+
+.summaryRow .summaryLabel {
+  font-weight: 500;
+}
+
+.summaryRow .summaryValue {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.summaryRow.balanceRow {
+  border-top: 1px dashed #cbd5e1;
+  padding-top: 6px;
+  margin-top: 2px;
+  font-weight: 700;
+}
+
+.summaryRow.balanceRow .summaryLabel {
   color: #15803d;
+}
+
+.summaryRow.balanceRow .summaryValue {
+  color: #15803d;
+  font-size: 14px;
 }
 
 .advanceCellInput {
@@ -611,13 +652,19 @@ input:focus, textarea:focus, select:focus {
   border-radius: 5px;
   font-size: 13px;
   font-weight: 600;
+  background: #fff;
+}
+
+.advanceCellInput:focus {
+  border-color: #1a56db;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(26,86,219,0.15);
 }
 
 .addRowBtn {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 12px 16px;
   border: 1px dashed #94a3b8;
   border-radius: 8px;
   background: transparent;
@@ -625,9 +672,9 @@ input:focus, textarea:focus, select:focus {
   padding: 8px 14px;
   font-size: 13px;
   font-weight: 600;
-  width: calc(100% - 32px);
   justify-content: center;
   transition: all 0.15s;
+  cursor: pointer;
 }
 .addRowBtn:hover { background: #eff6ff; border-color: #1a56db; color: #1a56db; }
 
@@ -752,10 +799,34 @@ input:focus, textarea:focus, select:focus {
 .pbSizeRaw { font-size: 10px; color: #374151; }
 .pbSizeCalc { font-size: 9px; color: #6b7280; display: block; }
 .pbSizeConverted { font-size: 9px; color: #1a56db; display: block; font-style: italic; }
-.pbTable tfoot td { font-weight: bold; }
-.pbTable tfoot tr.pbTfTotal td { border-top: 2px solid #000; background: #f5f5f5; }
-.pbTable tfoot tr.pbTfAdvance td { background: #fff; }
-.pbTable tfoot tr.pbTfBalance td { background: #f0fdf4; }
+.pbSummaryContainer {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-start;
+}
+.pbSummaryTable {
+  width: 180px;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.pbSummaryTable td {
+  border: none;
+  padding: 2px 0;
+}
+.pbSummaryTable td.pbSummaryLabel {
+  background: transparent;
+  font-weight: bold;
+}
+.pbSummaryTable td.pbSummaryVal {
+  text-align: right;
+  font-weight: bold;
+  white-space: nowrap;
+}
+.pbSummaryTable tr.pbSummaryBalanceRow td {
+  background: transparent;
+  border-top: 1px dashed #000;
+  padding-top: 4px;
+}
 .pbRight { text-align: right; }
 .pbNote { font-size: 10px; margin: 16px 0 6px; }
 .pbNoteLabel { font-weight: bold; margin-bottom: 3px; }
@@ -1348,4 +1419,122 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+/* ── Multiple tables (sections) ─────────────────────────────────────────────── */
+
+/* Center panel: per-table toolbar */
+.centerToolbar {
+  margin-bottom: 8px;
+}
+.sectionToolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sectionTitleInput {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.sectionTitleInput:focus {
+  outline: none;
+  border-color: #1a56db;
+  background: #fff;
+}
+.sectionSubtotal {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+/* Template / Manual mode toggle */
+.modeToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.modeToggleBtn.template {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.modeToggleBtn.template:hover {
+  background: #dbeafe;
+}
+.modeToggleBtn.manual {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+.modeToggleBtn.manual:hover {
+  background: #dcfce7;
+}
+.sectionTotalLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.sectionTotalLine .summaryValue { font-weight: 700; }
+
+/* Add-another-table button */
+.addTableBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  margin: 4px 0 8px;
+  background: #f8fafc;
+  border: 1px dashed #94a3b8;
+  border-radius: 10px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.addTableBtn:hover {
+  background: #eff6ff;
+  border-color: #1a56db;
+  color: #1a56db;
+}
+
+/* Preview: section blocks + top-right label */
+.pbSectionBlock {
+  margin-bottom: 10px;
+}
+.pbSectionLabel {
+  text-align: left;
+  font-weight: bold;
+  font-size: 12px;
+  margin: 8px 0 3px;
+}
+/* In-table Total row: only the last two cells (Rate + Amount) are boxed */
+.pbTable tfoot tr.pbTotalRow td.pbTotalSpacer {
+  border: none;
+  background: transparent;
+}
+.pbTable tfoot tr.pbTotalRow td.pbTotalLabel,
+.pbTable tfoot tr.pbTotalRow td.pbTotalValue {
+  border: 1px solid #000;
+  font-weight: bold;
+  text-align: center;
+  background: #fafafa;
 }

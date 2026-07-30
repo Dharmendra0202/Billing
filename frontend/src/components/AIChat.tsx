@@ -262,7 +262,15 @@ export function AIChat({
         let parsedValue: any = value;
         if (field === "advance") {
           parsedValue = parseFloat(value) || 0;
-        } else if (field === "showNote" || field === "showSignature") {
+        } else if (
+          field === "showNote" ||
+          field === "showSignature" ||
+          field === "showHeader" ||
+          field === "showDate" ||
+          field === "showClientDetails" ||
+          field === "showClientAddress" ||
+          field === "showGST"
+        ) {
           parsedValue = value === true || value === "true";
         }
         onBillDetailsChange({ ...billDetails, [field]: parsedValue });

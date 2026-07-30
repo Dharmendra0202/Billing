@@ -196,12 +196,12 @@ export function grandTotal(tables: BillTable[]) {
   }, 0);
 }
 
-export function parseSize(size: string): number {
+export function parseSize(size: string, applyInchConversion: boolean = true): number {
   const clean = size.trim();
   if (!clean) return 1;
 
-  // Convert point notation values first (e.g. 5.6 -> 5.50)
-  const converted = convertAllPointValues(clean);
+  // Convert point notation values first (e.g. 5.6 -> 5.50) — only in template mode.
+  const converted = applyInchConversion ? convertAllPointValues(clean) : clean;
 
   // Replace multiplication characters with standard *
   let sanitized = converted

@@ -25,6 +25,8 @@ export const initialBillDetails: BillDetails = {
   showGST: true,
   showClientAddress: true,
   showClientDetails: true,
+  showHeader: true,
+  showDate: true,
   proprietorName: "Mr. Dharmendra Vishwakarma"
 };
 

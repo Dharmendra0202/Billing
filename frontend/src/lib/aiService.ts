@@ -321,7 +321,7 @@ DELETE_ROW → remove a row by sr number:
 { "action": "DELETE_ROW", "data": { "sr": 3 }, "reply": "Deleted row 3..." }
 
 UPDATE_DETAIL → change bill header details:
-{ "action": "UPDATE_DETAIL", "data": { "field": "clientName|clientAddress|date|subject|advance|note|showNote|showSignature|proprietorName", "value": "new value" }, "reply": "Updated client name..." }
+{ "action": "UPDATE_DETAIL", "data": { "field": "clientName|clientAddress|date|subject|advance|note|showNote|showSignature|proprietorName|showHeader|showDate|showClientDetails|showClientAddress|showGST", "value": "new value" }, "reply": "Updated client name..." }
 
 CLEAR_TABLE → remove all rows:
 { "action": "CLEAR_TABLE", "data": {}, "reply": "Table cleared." }
@@ -372,50 +372,33 @@ RULES:
   }
 
   async extractBillFromImage(imageBase64: string): Promise<string> {
-    const extractionPrompt = `You are a bill data extractor. Look at this bill/invoice image carefully and extract every row of data.
+    const extractionPrompt = `You are a bill/invoice data extraction expert. Carefully read the bill image and extract all table rows.
 
-The table in this bill has these columns:
-- Particulars (item name/description)
-- Size (measurements like length x width, e.g. "6.66 × 4.66" or "—")
-- Quantity / Area (numeric quantity or area, e.g. "31.00", "3", "16.00", "1". Strip unit suffixes like "Sq.ft", "Nos", "No" and extract only the number)
-- Rate (price per unit)
-- Amount (total for that item = quantity * rate)
+The table may have columns like:
+- Item / Particulars / Description (the item name)
+- Size (measurements like "4.75 × 4.25", "2.75 × 4.0", or empty/dash if not present)
+- Quantity / Area / Qty (a numeric value, possibly with a unit like "Sq.ft", "RFT", "No", "Nos", "Pcs" — extract ONLY the number, strip the unit)
+- Rate (price per unit — a number)
+- Amount / Total (total for that row — a number)
 
-Extract ALL rows you can see. Number them starting from 1.
+Rules:
+1. Extract EVERY row you can see. Do not skip any.
+2. For "particulars": use the exact item name/description text from the image.
+3. For "size": use the exact measurement string (e.g. "4.75 x 4.25"). If it shows a dash "—" or is blank, use "".
+4. For "quantity": extract ONLY the numeric value. Strip any units like Sq.ft, RFT, No, Nos, Pcs. Examples: "20.18 Sq.ft" → 20.18, "4.66 RFT" → 4.66, "1 No" → 1, "3" → 3.
+5. For "rate": a clean number.
+6. For "amount": a clean number.
+7. sr starts at 1 and increments for each row.
 
-Return ONLY this exact JSON structure, nothing else:
+You MUST return ONLY valid JSON in this EXACT format with the "items" key — no other text, no markdown:
 {
   "items": [
-    {
-      "sr": 1,
-      "particulars": "exact item name from image (e.g. Cupboard)",
-      "size": "exact size string from image (e.g. 6.66 x 4.66, or empty if dash)",
-      "quantity": 31.00,
-      "rate": 525,
-      "amount": 16275
-    },
-    {
-      "sr": 2,
-      "particulars": "Entry Drawer",
-      "size": "",
-      "quantity": 3,
-      "rate": 1500,
-      "amount": 4500
-    }
+    { "sr": 1, "particulars": "Mirror Panel", "size": "4.75 x 4.25", "quantity": 20.18, "rate": 275, "amount": 5549.50 },
+    { "sr": 2, "particulars": "Entry Drawer", "size": "", "quantity": 1, "rate": 1500, "amount": 1500 }
   ],
-  "total": 20775,
-  "advance": 0,
-  "balance": 20775
-}
-
-Important rules:
-1. sr starts from 1 and increments by 1 for each row
-2. Extract size exactly as written (e.g. "6.66 x 4.66" or similar, or empty string "" if it is a dash or not present)
-3. quantity should be a clean number (e.g. 31.00 or 3). Strip all text like "Sq.ft", "Nos", "No", etc.
-4. rate should be a clean number.
-5. amount should be a clean number.
-6. Extract EVERY row, do not skip any.
-7. Return ONLY valid JSON, no explanation text`;
+  "total": 7049.50,
+  "advance": 0
+}`;
 
     return this.analyzeImage(imageBase64, extractionPrompt);
   }

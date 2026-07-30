@@ -1,4 +1,4 @@
-import type { BillDetails, HeaderTemplate } from "../types";
+import type { BillDetails, BillSection, HeaderTemplate } from "../types";
 import { money, formatNumber } from "../lib/billMath";
 import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
 
@@ -17,30 +17,30 @@ type Row = {
 
 type Props = {
   header: HeaderTemplate;
-  rows: Row[];
+  sections: BillSection[];
   billDetails: BillDetails;
 };
 
 // Convert each part of a size expression and return both original + converted display
-function convertSizeDisplay(size: string): { original: string; converted: string; value: number } {
+function convertSizeDisplay(size: string, applyInch: boolean = true): { original: string; converted: string; value: number } {
   const clean = size.trim();
   if (!clean) return { original: "", converted: "", value: 1 };
 
   const rawParts = clean.split(/[x*×]/i).map(p => p.trim()).filter(Boolean);
 
   if (rawParts.length >= 2) {
-    const convertedParts = rawParts.map(p => convertAllPointValues(p));
+    const convertedParts = rawParts.map(p => (applyInch ? convertAllPointValues(p) : p));
     const values = convertedParts.map(p => parseFloat(p) || 0);
     const result = Math.round(values.reduce((a, b) => a * b, 1) * 10000) / 10000;
     const convertedStr = convertedParts.join(" × ");
     const originalStr = rawParts.join(" × ");
     // Only show converted if it actually changed
-    const changed = convertedStr !== originalStr;
+    const changed = applyInch && convertedStr !== originalStr;
     return { original: originalStr, converted: changed ? convertedStr : "", value: result };
   }
 
-  const converted = convertAllPointValues(clean);
-  const changed = converted !== clean;
+  const converted = applyInch ? convertAllPointValues(clean) : clean;
+  const changed = applyInch && converted !== clean;
   return { original: clean, converted: changed ? converted : "", value: parseFloat(converted) || 1 };
 }
 
@@ -52,68 +52,17 @@ function hasConvertiblePoints(size: string): boolean {
   });
 }
 
-export function BillPreview({ header, rows, billDetails }: Props) {
-  const total = rows.reduce((s, r) => s + r.amount, 0);
-  const balance = total - billDetails.advance;
+// Renders a single section table (with an optional top-left label).
+function SectionTable({ section }: { section: BillSection }) {
+  const rows = section.rows as Row[];
+  const subtotal = rows.reduce((s, r) => s + r.amount, 0);
+  const applyInch = (section.mode ?? "template") !== "manual";
 
   return (
-    <div>
-      {/* Single Line above Name */}
-      <div className="pbSingleLine" />
-
-      {/* Business Name */}
-      <div className="pbBizName" style={{ fontSize: `${header.fontSizeName ?? 24}px` }}>
-        {header.businessName || "BUSINESS NAME"}
-      </div>
-
-      {/* Contact */}
-      {header.phone && (
-        <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
-          Mobile No. {header.phone}
-        </p>
+    <div className="pbSectionBlock">
+      {section.title.trim() && (
+        <p className="pbSectionLabel">{section.title}</p>
       )}
-      {header.address && (
-        <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
-          {header.address}
-        </p>
-      )}
-      {billDetails.showGST !== false && header.gstNumber && (
-        <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
-          GST: {header.gstNumber}
-        </p>
-      )}
-
-      {/* First Double Line */}
-      <div className="pbDoubleLineContainer">
-        <div className="pbDoubleLineTop" />
-        <div className="pbDoubleLineBottom" />
-      </div>
-
-      {/* Tagline */}
-      {header.tagline ? (
-        <p className="pbTagline" style={{ fontSize: `${header.fontSizeTagline ?? 11}px` }}>
-          {header.tagline}
-        </p>
-      ) : null}
-
-      {/* Date */}
-      <p className="pbDate">Date: {billDetails.date}</p>
-
-      {/* Client */}
-      {billDetails.showClientDetails !== false && (
-        <>
-          <p className="pbTo">To,</p>
-          <p className="pbClientName">{billDetails.clientName || "________________"}</p>
-          {billDetails.showClientAddress !== false && (
-            <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
-          )}
-        </>
-      )}
-
-      {/* Subject */}
-      {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}
-
-      {/* Items Table — full 6 columns */}
       <table className="pbTable">
         <thead>
           <tr>
@@ -148,7 +97,7 @@ export function BillPreview({ header, rows, billDetails }: Props) {
               </td>
               <td className="pbSizeCell">
                 {row.size ? (() => {
-                  const { original, converted } = convertSizeDisplay(row.size);
+                  const { original, converted } = convertSizeDisplay(row.size, applyInch);
                   return (
                     <>
                       <span className="pbSizeRaw">{original}</span>
@@ -166,20 +115,109 @@ export function BillPreview({ header, rows, billDetails }: Props) {
           ))}
         </tbody>
         <tfoot>
-          <tr className="pbTfTotal">
-            <td colSpan={5} className="pbRight"><strong>Total</strong></td>
-            <td className="pbAmtCell"><strong>{money(total)}</strong></td>
-          </tr>
-          <tr className="pbTfAdvance">
-            <td colSpan={5} className="pbRight">Advance</td>
-            <td className="pbAmtCell">{money(billDetails.advance)}</td>
-          </tr>
-          <tr className="pbTfBalance">
-            <td colSpan={5} className="pbRight"><strong>Balance</strong></td>
-            <td className="pbAmtCell" style={{ color: "#15803d", fontWeight: 700 }}>{money(balance)}</td>
+          <tr className="pbTotalRow">
+            <td colSpan={4} className="pbTotalSpacer"></td>
+            <td className="pbTotalLabel">Total</td>
+            <td className="pbTotalValue">{money(subtotal).replace("₹ ", "")}</td>
           </tr>
         </tfoot>
       </table>
+    </div>
+  );
+}
+
+export function BillPreview({ header, sections, billDetails }: Props) {
+  const total = sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0);
+  const balance = total - billDetails.advance;
+  const multipleTables = sections.length > 1;
+
+  return (
+    <div style={{ paddingTop: billDetails.showHeader === false ? "12px" : "0" }}>
+      {/* Single Line above Name */}
+      {billDetails.showHeader !== false && (
+        <>
+          <div className="pbSingleLine" />
+
+          {/* Business Name */}
+          <div className="pbBizName" style={{ fontSize: `${header.fontSizeName ?? 24}px` }}>
+            {header.businessName || "BUSINESS NAME"}
+          </div>
+
+          {/* Contact */}
+          {header.phone && (
+            <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
+              Mobile No. {header.phone}
+            </p>
+          )}
+          {header.address && (
+            <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
+              {header.address}
+            </p>
+          )}
+          {billDetails.showGST !== false && header.gstNumber && (
+            <p className="pbContactLine" style={{ fontSize: `${header.fontSizeContact ?? 11}px` }}>
+              GST: {header.gstNumber}
+            </p>
+          )}
+
+          {/* First Double Line */}
+          <div className="pbDoubleLineContainer">
+            <div className="pbDoubleLineTop" />
+            <div className="pbDoubleLineBottom" />
+          </div>
+
+          {/* Tagline */}
+          {header.tagline ? (
+            <p className="pbTagline" style={{ fontSize: `${header.fontSizeTagline ?? 11}px` }}>
+              {header.tagline}
+            </p>
+          ) : null}
+        </>
+      )}
+
+      {/* Date */}
+      {billDetails.showDate !== false && (
+        <p className="pbDate">Date: {billDetails.date}</p>
+      )}
+
+      {/* Client */}
+      {billDetails.showClientDetails !== false && (
+        <>
+          <p className="pbTo">To,</p>
+          <p className="pbClientName">{billDetails.clientName || "________________"}</p>
+          {billDetails.showClientAddress !== false && (
+            <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
+          )}
+        </>
+      )}
+
+      {/* Subject */}
+      {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}
+
+      {/* Section tables — each with its own top-left label + in-table Total row */}
+      {sections.map(section => (
+        <SectionTable key={section.id} section={section} />
+      ))}
+
+      {/* Grand totals */}
+      <div className="pbSummaryContainer">
+        <table className="pbSummaryTable">
+          <tbody>
+            <tr>
+              <td className="pbSummaryLabel"><strong>{multipleTables ? "Grand Total" : "Total"}</strong></td>
+              <td className="pbSummaryVal"><strong>{money(total)}</strong></td>
+            </tr>
+            <tr>
+              <td className="pbSummaryLabel">Advance</td>
+              <td className="pbSummaryVal">{money(billDetails.advance)}</td>
+            </tr>
+            <tr className="pbSummaryBalanceRow">
+              <td className="pbSummaryLabel"><strong>Balance</strong></td>
+              <td className="pbSummaryVal" style={{ color: "#15803d" }}><strong>{money(balance)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       {/* Note */}
       {billDetails.showNote && billDetails.note && (

@@ -186,15 +186,35 @@ export function BillScanner({
         setScanResult(data);
       } catch (e) {
         setRawExtractedText(raw);
-        throw e;
+        throw new Error("AI returned invalid JSON. Try scanning again or use a clearer image.");
       }
+
+      // ── Normalize: handle plain array, {items:[...]}, {rows:[...]}, {data:[...]}
+      let items: any[] = [];
+      if (Array.isArray(data)) {
+        items = data;
+      } else if (Array.isArray(data?.items)) {
+        items = data.items;
+      } else if (Array.isArray(data?.rows)) {
+        items = data.rows;
+      } else if (Array.isArray(data?.data)) {
+        items = data.data;
+      } else {
+        // Try to find any array property on the object
+        const arrProp = Object.values(data || {}).find(v => Array.isArray(v)) as any[];
+        if (arrProp?.length) items = arrProp;
+      }
+
+      // Filter out non-object or completely empty entries
+      items = items.filter((item: any) => item && typeof item === "object");
       
       // Generate clean human-readable text format for simple copy/paste reference
       let formatted = "";
-      if (data && data.items && data.items.length > 0) {
-        formatted = data.items.map((item: any, idx: number) => {
+      if (items.length > 0) {
+        formatted = items.map((item: any, idx: number) => {
           const parts = [];
-          if (item.particulars) parts.push(item.particulars);
+          const name = item.particulars || item.name || item.item || item.description || "";
+          if (name) parts.push(name);
           if (item.size) parts.push(`Size: ${item.size}`);
           if (item.quantity !== undefined && item.quantity !== null && item.quantity !== "") parts.push(`Qty: ${item.quantity}`);
           if (item.rate !== undefined && item.rate !== null && item.rate !== "") parts.push(`Rate: ${item.rate}`);
@@ -202,37 +222,42 @@ export function BillScanner({
           return `${item.sr ?? (idx + 1)}. ${parts.join("  |  ")}`;
         }).join("\n");
         
-        if (data.total) formatted += `\n\nTotal: ${data.total}`;
-        if (data.advance) formatted += `\nAdvance: ${data.advance}`;
+        if (data?.total) formatted += `\n\nTotal: ${data.total}`;
+        if (data?.advance) formatted += `\nAdvance: ${data.advance}`;
       } else {
         formatted = raw;
       }
       setRawExtractedText(formatted);
 
-      if (!data.items?.length) { setScanStatus("⚠️ No items found. Try a clearer image."); return; }
+      if (!items.length) { setScanStatus("⚠️ No items found. Try a clearer image."); return; }
 
-      const newRows: ScannedRow[] = data.items.map((item: any, idx: number) => {
+      const newRows: ScannedRow[] = items.map((item: any, idx: number) => {
         let sizeStr = String(item.size ?? "");
-        if (sizeStr === "—" || sizeStr === "null" || sizeStr === "undefined") {
+        if (sizeStr === "—" || sizeStr === "null" || sizeStr === "undefined" || sizeStr === "-") {
           sizeStr = "";
         }
         if (sizeStr && applyInchConversion) {
           sizeStr = convertAllPointValues(sizeStr);
         }
         
+        // Use quantity directly if provided, otherwise calculate from size
         let qty = 1;
-        if (item.quantity !== undefined && item.quantity !== null && item.quantity !== "") {
-          qty = parseFloat(item.quantity) || 1;
+        const rawQty = item.quantity ?? item.qty ?? item.area ?? null;
+        if (rawQty !== undefined && rawQty !== null && rawQty !== "") {
+          qty = parseFloat(String(rawQty).replace(/[^\d.]/g, "")) || 1;
         } else if (sizeStr) {
           qty = parseSize(sizeStr);
         }
         
-        const rate   = parseFloat(item.rate)   || 0;
-        const amount = parseFloat(item.amount) || calcAmount(qty, rate);
+        const rate   = parseFloat(String(item.rate ?? 0).replace(/[^\d.]/g, ""))   || 0;
+        const amount = parseFloat(String(item.amount ?? 0).replace(/[^\d.]/g, "")) || calcAmount(qty, rate);
+        const particulars = String(
+          item.particulars ?? item.name ?? item.item ?? item.description ?? ""
+        );
         return {
           id: uid(),
           sr: item.sr ?? idx + 1,
-          particulars: String(item.particulars ?? item.name ?? ""),
+          particulars,
           size: sizeStr,
           quantity: qty,
           rate,
@@ -241,7 +266,7 @@ export function BillScanner({
       });
 
       setRows(newRows);
-      if (data.advance) setBillDetails(prev => ({ ...prev, advance: parseFloat(data.advance) || 0 }));
+      if (data?.advance) setBillDetails(prev => ({ ...prev, advance: parseFloat(data.advance) || 0 }));
       setScanStatus(`✅ ${newRows.length} rows extracted. Edit in table or use AI tab.`);
       setChatMsgs(prev => [...prev, { id: uid(), role: "ai",
         text: `✅ Scanned ${newRows.length} rows! Switch to AI tab to modify with prompts, or edit the table directly.` }]);

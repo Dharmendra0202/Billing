@@ -1,21 +1,21 @@
-import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database } from "lucide-react";
+import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
-import { initialBillDetails, initialHeader, initialTables } from "./data/initialBill";
+import { initialBillDetails, initialHeader } from "./data/initialBill";
 import { money, parseSize } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
-import type { BillDetails, BillTable, HeaderTemplate } from "./types";
+import type { BillDetails, BillSection, BillTable, EditorRow, HeaderTemplate } from "./types";
 
-// Convert editor rows → BillTable for export (all 6 columns)
-function toBillTable(rows: EditorRow[]): BillTable {
+// Convert a single section's editor rows → BillTable for export (all 6 columns)
+function sectionToBillTable(section: BillSection): BillTable {
   return {
-    id: "table-main",
-    title: "Bill Items",
+    id: section.id,
+    title: section.title,
     columns: [
       { id: "sr",          label: "Sr. No",      kind: "number" },
       { id: "particulars", label: "Particulars", kind: "text"   },
@@ -24,7 +24,7 @@ function toBillTable(rows: EditorRow[]): BillTable {
       { id: "rate",        label: "Rate",        kind: "number" },
       { id: "amount",      label: "Amount",      kind: "number" }
     ],
-    rows: rows.map(r => ({
+    rows: section.rows.map(r => ({
       id: r.id,
       cells: {
         sr:          String(r.sr),
@@ -41,20 +41,6 @@ function toBillTable(rows: EditorRow[]): BillTable {
   };
 }
 
-// ── Inline table row type for center panel ──────────────────────────────────
-type EditorRow = {
-  id: string;
-  sr: number;
-  particulars: string;
-  size: string;
-  quantity: number;
-  rate: number;
-  amount: number;
-  bold?: boolean;
-  fontSize?: number;
-  align?: "left" | "center" | "right";
-};
-
 function recalc(rows: EditorRow[]): EditorRow[] {
   return rows.map((r, i) => {
     const amt = Math.round(r.quantity * r.rate * 100) / 100;
@@ -62,13 +48,36 @@ function recalc(rows: EditorRow[]): EditorRow[] {
   });
 }
 
-
-
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
-const defaultRows = (): EditorRow[] => [
-  { id: uid(), sr: 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }
+const makeRow = (): EditorRow => ({
+  id: uid(), sr: 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left"
+});
+
+const defaultSections = (): BillSection[] => [
+  { id: uid(), title: "", rows: [makeRow()], mode: "template" }
 ];
+
+// Load persisted sections, migrating from the older single-table `bill.rows` format if needed.
+function loadInitialSections(): BillSection[] {
+  const savedSections = localStorage.getItem("bill.sections");
+  if (savedSections) {
+    try {
+      const parsed = JSON.parse(savedSections) as BillSection[];
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch { /* ignore */ }
+  }
+  const savedRows = localStorage.getItem("bill.rows");
+  if (savedRows) {
+    try {
+      const rows = JSON.parse(savedRows) as EditorRow[];
+      if (Array.isArray(rows) && rows.length) return [{ id: uid(), title: "", rows }];
+    } catch { /* ignore */ }
+  }
+  return defaultSections();
+}
+
+type SelectedCell = { sectionId: string; rowId: string } | null;
 
 export function App() {
   const [header, setHeader] = useState<HeaderTemplate>(() => {
@@ -81,19 +90,16 @@ export function App() {
     return saved ? JSON.parse(saved) : initialBillDetails;
   });
 
-  const [rows, setRows] = useState<EditorRow[]>(() => {
-    const saved = localStorage.getItem("bill.rows");
-    return saved ? JSON.parse(saved) : defaultRows();
-  });
+  const [sections, setSections] = useState<BillSection[]>(loadInitialSections);
 
   const [billTitle, setBillTitle] = useState("New Bill");
-  const [scannerOpen, setScannerOpen] = useState(false);
   const [leftTab, setLeftTab] = useState<"details" | "scanner">("details");
   const [dbPanelOpen, setDbPanelOpen] = useState(false);
   const [leftWidth, setLeftWidth] = useState(320);
   const [rightWidth, setRightWidth] = useState(400);
   const [isResizingLeft, setIsResizingLeft] = useState(false);
   const [isResizingRight, setIsResizingRight] = useState(false);
+  const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
 
   const startResizingLeft = (mouseDownEvent: React.MouseEvent) => {
     mouseDownEvent.preventDefault();
@@ -139,70 +145,93 @@ export function App() {
     document.addEventListener("mouseup", handleMouseUp);
   };
 
-  // Legacy tables state for AIChat compatibility
-  const [tables, setTables] = useState<BillTable[]>(() => {
-    const saved = localStorage.getItem("bill.tables");
-    return saved ? JSON.parse(saved) : initialTables;
-  });
-
-  const total = useMemo(() => rows.reduce((s, r) => s + r.amount, 0), [rows]);
+  // ── Derived totals ────────────────────────────────────────────────────────
+  const sectionTotal = (section: BillSection) => section.rows.reduce((s, r) => s + r.amount, 0);
+  const total = useMemo(
+    () => sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0),
+    [sections]
+  );
   const balance = total - billDetails.advance;
+  const totalItems = useMemo(() => sections.reduce((n, s) => n + s.rows.length, 0), [sections]);
 
-  const currentBillTables = useMemo(() => [toBillTable(rows)], [rows]);
+  const currentBillTables = useMemo(() => sections.map(sectionToBillTable), [sections]);
 
   const save = () => {
     localStorage.setItem("bill.header", JSON.stringify(header));
     localStorage.setItem("bill.details", JSON.stringify(billDetails));
-    localStorage.setItem("bill.rows", JSON.stringify(rows));
-    localStorage.setItem("bill.tables", JSON.stringify(tables));
+    localStorage.setItem("bill.sections", JSON.stringify(sections));
+    // Remove the legacy single-table key so it doesn't shadow the new format.
+    localStorage.removeItem("bill.rows");
   };
 
   const reset = () => {
     if (!confirm("Reset everything to defaults?")) return;
     setHeader(initialHeader);
     setBillDetails(initialBillDetails);
-    setRows(defaultRows());
-    setTables(initialTables);
+    setSections(defaultSections());
+    setSelectedCell(null);
     setBillTitle("New Bill");
     localStorage.removeItem("bill.header");
     localStorage.removeItem("bill.details");
     localStorage.removeItem("bill.rows");
-    localStorage.removeItem("bill.tables");
+    localStorage.removeItem("bill.sections");
   };
 
-  const addRow = () => {
-    setRows(prev => [...prev, { id: uid(), sr: prev.length + 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left" }]);
+  // ── Section (table) operations ──────────────────────────────────────────────
+  const updateSectionRows = (sectionId: string, updater: (rows: EditorRow[]) => EditorRow[]) => {
+    setSections(prev => prev.map(s => (s.id === sectionId ? { ...s, rows: updater(s.rows) } : s)));
   };
 
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
-
-  const toggleBold = () => {
-    if (!selectedRowId) return;
-    setRows(prev => prev.map(r => r.id === selectedRowId ? { ...r, bold: !r.bold } : r));
+  const addTable = () => {
+    setSections(prev => [...prev, { id: uid(), title: `Table ${prev.length + 1}`, rows: [makeRow()], mode: "template" }]);
   };
 
-  const adjustFontSize = (delta: number) => {
-    if (!selectedRowId) return;
-    setRows(prev => prev.map(r => {
-      if (r.id !== selectedRowId) return r;
-      const currentSize = r.fontSize || 11;
-      const newSize = Math.max(8, Math.min(24, currentSize + delta));
-      return { ...r, fontSize: newSize };
+  // Switch a table between "template" (inch conversion) and "manual" (plain math),
+  // re-computing existing quantities from their Size cells under the new mode.
+  const toggleTableMode = (sectionId: string) => {
+    setSections(prev => prev.map(s => {
+      if (s.id !== sectionId) return s;
+      const nextMode: "template" | "manual" = (s.mode ?? "template") === "manual" ? "template" : "manual";
+      const applyInch = nextMode !== "manual";
+      const rows = recalc(
+        s.rows.map(r => ({
+          ...r,
+          quantity: r.size.trim() ? parseSize(r.size, applyInch) : r.quantity
+        }))
+      );
+      return { ...s, mode: nextMode, rows };
     }));
   };
 
-  const changeAlignment = (alignment: "left" | "center" | "right") => {
-    if (!selectedRowId) return;
-    setRows(prev => prev.map(r => r.id === selectedRowId ? { ...r, align: alignment } : r));
+  const deleteTable = (sectionId: string) => {
+    setSections(prev => {
+      if (prev.length <= 1) return prev; // keep at least one table
+      return prev.filter(s => s.id !== sectionId);
+    });
+    setSelectedCell(prev => (prev?.sectionId === sectionId ? null : prev));
   };
 
-  const updateRow = (id: string, field: keyof EditorRow, value: string | number) => {
-    setRows(prev => {
-      const updated = prev.map(r => {
-        if (r.id !== id) return r;
-        const next = { ...r, [field]: value };
+  const updateTableTitle = (sectionId: string, title: string) => {
+    setSections(prev => prev.map(s => (s.id === sectionId ? { ...s, title } : s)));
+  };
+
+  const addRow = (sectionId: string) => {
+    updateSectionRows(sectionId, rows => recalc([...rows, makeRow()]));
+  };
+
+  const deleteRow = (sectionId: string, rowId: string) => {
+    updateSectionRows(sectionId, rows => recalc(rows.filter(r => r.id !== rowId)));
+    setSelectedCell(prev => (prev?.rowId === rowId ? null : prev));
+  };
+
+  const updateRow = (sectionId: string, rowId: string, field: keyof EditorRow, value: string | number) => {
+    const applyInch = (sections.find(s => s.id === sectionId)?.mode ?? "template") !== "manual";
+    updateSectionRows(sectionId, rows => {
+      const updated = rows.map(r => {
+        if (r.id !== rowId) return r;
+        const next = { ...r, [field]: value } as EditorRow;
         if (field === "size") {
-          next.quantity = parseSize(next.size);
+          next.quantity = parseSize(next.size, applyInch);
         }
         return next;
       });
@@ -211,14 +240,52 @@ export function App() {
     });
   };
 
-  const deleteRow = (id: string) => {
-    setRows(prev => recalc(prev.filter(r => r.id !== id)));
-    if (selectedRowId === id) setSelectedRowId(null);
+  // ── Row formatting (operates on the currently selected cell) ────────────────
+  const selectedRow = useMemo(() => {
+    if (!selectedCell) return null;
+    return sections.find(s => s.id === selectedCell.sectionId)?.rows.find(r => r.id === selectedCell.rowId) ?? null;
+  }, [selectedCell, sections]);
+
+  const toggleBold = () => {
+    if (!selectedCell) return;
+    updateSectionRows(selectedCell.sectionId, rows =>
+      rows.map(r => (r.id === selectedCell.rowId ? { ...r, bold: !r.bold } : r))
+    );
   };
 
-  const handleAIUpdate = (newHeader: HeaderTemplate, newTables: BillTable[]) => {
-    setHeader(newHeader);
-    setTables(newTables);
+  const adjustFontSize = (delta: number) => {
+    if (!selectedCell) return;
+    updateSectionRows(selectedCell.sectionId, rows =>
+      rows.map(r => {
+        if (r.id !== selectedCell.rowId) return r;
+        const currentSize = r.fontSize || 11;
+        const newSize = Math.max(8, Math.min(24, currentSize + delta));
+        return { ...r, fontSize: newSize };
+      })
+    );
+  };
+
+  const changeAlignment = (alignment: "left" | "center" | "right") => {
+    if (!selectedCell) return;
+    updateSectionRows(selectedCell.sectionId, rows =>
+      rows.map(r => (r.id === selectedCell.rowId ? { ...r, align: alignment } : r))
+    );
+  };
+
+  // ── Bridges for Scanner / AIChat which operate on a flat rows array ─────────
+  // They target the FIRST section (the main table).
+  const firstSection = sections[0];
+  const firstRows = firstSection?.rows ?? [];
+
+  const setFirstSectionRows: React.Dispatch<React.SetStateAction<EditorRow[]>> = (updater) => {
+    setSections(prev => {
+      const base = prev.length ? prev : defaultSections();
+      const current = base[0].rows;
+      const nextRows = typeof updater === "function"
+        ? (updater as (rows: EditorRow[]) => EditorRow[])(current)
+        : updater;
+      return base.map((s, i) => (i === 0 ? { ...s, rows: nextRows } : s));
+    });
   };
 
   const handleExport = async (format: "pdf" | "excel" | "word") => {
@@ -333,6 +400,14 @@ export function App() {
                 <span className="cardTitle">Optional Sections</span>
               </div>
               <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showHeader !== false} onChange={e => updateDetail("showHeader", e.target.checked)} />
+                Show Business Header / Letterhead
+              </label>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showDate !== false} onChange={e => updateDetail("showDate", e.target.checked)} />
+                Show Date
+              </label>
+              <label className="toggleRow">
                 <input type="checkbox" checked={billDetails.showClientDetails !== false} onChange={e => updateDetail("showClientDetails", e.target.checked)} />
                 Show Client Details (To)
               </label>
@@ -373,8 +448,8 @@ export function App() {
             <BillScanner 
               header={header} 
               onHeaderChange={setHeader} 
-              rows={rows}
-              onRowsChange={setRows}
+              rows={firstRows}
+              onRowsChange={setFirstSectionRows}
               billDetails={billDetails}
               onBillDetailsChange={setBillDetails}
               onClose={() => setLeftTab("details")} 
@@ -388,189 +463,246 @@ export function App() {
       {/* ── Center Panel ────────────────────────────────────────────────────── */}
       <main className="centerPanel">
         <div className="summaryStrip">
-          <span>Items: {rows.length}</span>
+          <span>Tables: {sections.length} · Items: {totalItems}</span>
           <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
             <span>Balance: <strong style={{ color: "#15803d" }}>{money(balance)}</strong></span>
             <span>Total: <strong>{money(total)}</strong></span>
           </div>
         </div>
 
-        <div className="billTableCard">
-          <div className="billTableToolbar">
-            <span className="billTableTitle">Bill Items</span>
+        {/* Global formatting toolbar (acts on the selected row) */}
+        <div className="billTableToolbar centerToolbar">
+          <span className="billTableTitle">
+            {selectedRow ? "Formatting selected row" : "Select a row to format"}
+          </span>
+          <div className="tableFormattingToolbar">
+            <button 
+              className={`formattingBtn ${selectedRow?.bold ? 'active' : ''}`}
+              onClick={toggleBold}
+              disabled={!selectedRow}
+              title="Bold"
+            >
+              <strong>B</strong>
+            </button>
+            <div className="fontSizeControls">
+              <button onClick={() => adjustFontSize(-1)} disabled={!selectedRow} title="Decrease Font Size">-</button>
+              <span className="fontSizeDisplay">{selectedRow?.fontSize || 11}px</span>
+              <button onClick={() => adjustFontSize(1)} disabled={!selectedRow} title="Increase Font Size">+</button>
+            </div>
+            <div className="alignmentControls">
+              {(["left", "center", "right"] as const).map(alignVal => (
+                <button
+                  key={alignVal}
+                  className={`formattingBtn ${selectedRow?.align === alignVal ? 'active' : ''}`}
+                  onClick={() => changeAlignment(alignVal)}
+                  disabled={!selectedRow}
+                  title={`Align ${alignVal}`}
+                >
+                  {alignVal === "left" ? "L" : alignVal === "center" ? "C" : "R"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button className="primaryButton" style={{ minHeight: 34, padding: "0 12px", fontSize: 13 }} onClick={addTable}>
+            <Plus size={15} /> Add Table
+          </button>
+        </div>
 
-            <div className="tableFormattingToolbar">
-              <button 
-                className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.bold ? 'active' : ''}`}
-                onClick={toggleBold}
-                disabled={!selectedRowId}
-                title="Bold (Ctrl+B)"
-              >
-                <strong>B</strong>
-              </button>
-              
-              <div className="fontSizeControls">
-                <button onClick={() => adjustFontSize(-1)} disabled={!selectedRowId} title="Decrease Font Size">-</button>
-                <span className="fontSizeDisplay">
-                  {selectedRowId ? (rows.find(r => r.id === selectedRowId)?.fontSize || 11) : 11}px
-                </span>
-                <button onClick={() => adjustFontSize(1)} disabled={!selectedRowId} title="Increase Font Size">+</button>
-              </div>
-              
-              <div className="alignmentControls">
-                {(["left", "center", "right"] as const).map(alignVal => (
-                  <button
-                    key={alignVal}
-                    className={`formattingBtn ${selectedRowId && rows.find(r => r.id === selectedRowId)?.align === alignVal ? 'active' : ''}`}
-                    onClick={() => changeAlignment(alignVal)}
-                    disabled={!selectedRowId}
-                    title={`Align ${alignVal}`}
-                  >
-                    {alignVal === "left" ? "L" : alignVal === "center" ? "C" : "R"}
-                  </button>
-                ))}
+        {/* One card per section (table) */}
+        {sections.map((section, sectionIndex) => {
+          const isManual = (section.mode ?? "template") === "manual";
+          return (
+          <div className="billTableCard" key={section.id}>
+            <div className="billTableToolbar sectionToolbar">
+              <input
+                className="sectionTitleInput"
+                value={section.title}
+                onChange={e => updateTableTitle(section.id, e.target.value)}
+                placeholder={sectionIndex === 0 ? "Table label (optional) — e.g. Master Bedroom" : "Table label — e.g. Bedroom"}
+              />
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  className={`modeToggleBtn ${isManual ? "manual" : "template"}`}
+                  onClick={() => toggleTableMode(section.id)}
+                  title={isManual
+                    ? "Manual mode: sizes are plain numbers / math (no inch conversion). Click to switch to Template mode."
+                    : "Template mode: inch chart applies (e.g. .6 → .50). Click to switch to Manual mode."}
+                >
+                  {isManual ? <Calculator size={13} /> : <Ruler size={13} />}
+                  {isManual ? "Manual" : "Template"}
+                </button>
+                <span className="sectionSubtotal">{money(sectionTotal(section))}</span>
+                <button className="primaryButton" style={{ minHeight: 32, padding: "0 10px", fontSize: 13 }} onClick={() => addRow(section.id)}>
+                  <FilePlus2 size={15} /> Add Row
+                </button>
+                <button
+                  className="miniButton danger"
+                  onClick={() => deleteTable(section.id)}
+                  disabled={sections.length <= 1}
+                  title={sections.length <= 1 ? "At least one table is required" : "Delete this table"}
+                  style={{ border: "none" }}
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
             </div>
 
-            <button className="primaryButton" style={{ minHeight: 34, padding: "0 12px", fontSize: 13 }} onClick={addRow}>
-              <FilePlus2 size={15} /> Add Row
-            </button>
-          </div>
-
-          <div className="tableWrap">
-            <table className="billTable">
-              <thead>
-                <tr>
-                  <th style={{ width: 44 }} className="thCenter">Sr.</th>
-                  <th>Particulars</th>
-                  <th style={{ width: 120 }}>Size</th>
-                  <th style={{ width: 100 }} className="thRight">Quantity</th>
-                  <th style={{ width: 100 }} className="thCenter">Rate</th>
-                  <th style={{ width: 110 }} className="thCenter">Amount</th>
-                  <th style={{ width: 36 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(row => (
-                  <tr key={row.id} style={{ background: selectedRowId === row.id ? "#f8fafc" : undefined }}>
-                    <td className="tdCenter">
-                      <input className="billCell" style={{ width: 36, textAlign: "center" }} value={row.sr} readOnly tabIndex={-1} onFocus={() => setSelectedRowId(row.id)} />
-                    </td>
-                    <td>
-                      <input
-                        className="billCell"
-                        value={row.particulars}
-                        onChange={e => updateRow(row.id, "particulars", e.target.value)}
-                        placeholder="Description of work / material…"
-                        onFocus={() => setSelectedRowId(row.id)}
-                        style={{
-                          fontWeight: row.bold ? "bold" : "normal",
-                          fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
-                          textAlign: row.align || "left"
-                        }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="billCell"
-                        value={row.size}
-                        onChange={e => updateRow(row.id, "size", e.target.value)}
-                        placeholder="e.g. 3x4 or 12"
-                        onFocus={() => setSelectedRowId(row.id)}
-                      />
-                      {row.size.trim() && (() => {
-                        const converted = convertAllPointValues(row.size);
-                        const parsed = parseSize(row.size);
-                        const changed = converted !== row.size;
-                        return (
-                          <small className="sizeHint">
-                            {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
-                            {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
-                          </small>
-                        );
-                      })()}
-                    </td>
-                    <td className="tdRight">
-                      <input
-                        className="billCell"
-                        style={{ textAlign: "right" }}
-                        type="number"
-                        min={0}
-                        value={row.quantity || ""}
-                        onChange={e => updateRow(row.id, "quantity", parseFloat(e.target.value) || 0)}
-                        placeholder="0"
-                        onFocus={() => setSelectedRowId(row.id)}
-                      />
-                    </td>
-                    <td className="tdCenter">
-                      <input
-                        className="billCell"
-                        style={{ textAlign: "center" }}
-                        type="number"
-                        min={0}
-                        value={row.rate || ""}
-                        onChange={e => updateRow(row.id, "rate", parseFloat(e.target.value) || 0)}
-                        placeholder="0"
-                        onFocus={() => setSelectedRowId(row.id)}
-                      />
-                    </td>
-                    <td className="tdAmount">
-                      <input
-                        className="billCell"
-                        style={{ textAlign: "center", background: "transparent" }}
-                        type="number"
-                        min={0}
-                        value={row.amount || ""}
-                        onChange={e => updateRow(row.id, "amount", parseFloat(e.target.value) || 0)}
-                        placeholder="0"
-                        onFocus={() => setSelectedRowId(row.id)}
-                      />
-                    </td>
-                    <td>
-                      <button
-                        className="miniButton danger"
-                        title="Remove row"
-                        onClick={() => deleteRow(row.id)}
-                        style={{ fontSize: 16, border: "none" }}
-                      >×</button>
-                    </td>
+            <div className="tableWrap">
+              <table className="billTable">
+                <thead>
+                  <tr>
+                    <th style={{ width: 44 }} className="thCenter">Sr.</th>
+                    <th>Particulars</th>
+                    <th style={{ width: 120 }}>Size</th>
+                    <th style={{ width: 100 }} className="thRight">Quantity</th>
+                    <th style={{ width: 100 }} className="thCenter">Rate</th>
+                    <th style={{ width: 110 }} className="thCenter">Amount</th>
+                    <th style={{ width: 36 }}></th>
                   </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="tfTotal">
-                  <td colSpan={5} style={{ textAlign: "right", fontWeight: 700 }}>Total</td>
-                  <td style={{ textAlign: "right", fontWeight: 700 }}>{money(total)}</td>
-                  <td></td>
-                </tr>
-                <tr className="tfAdvance">
-                  <td colSpan={5} style={{ textAlign: "right" }}>
-                    Advance
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    <input
-                      className="advanceCellInput"
-                      type="number"
-                      min={0}
-                      value={billDetails.advance || ""}
-                      onChange={e => updateDetail("advance", parseFloat(e.target.value) || 0)}
-                      placeholder="0"
-                    />
-                  </td>
-                  <td></td>
-                </tr>
-                <tr className="tfBalance">
-                  <td colSpan={5} style={{ textAlign: "right", fontWeight: 700 }}>Balance</td>
-                  <td style={{ textAlign: "right", fontWeight: 700 }}>{money(balance)}</td>
-                  <td></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {section.rows.map(row => {
+                    const isSelected = selectedCell?.sectionId === section.id && selectedCell?.rowId === row.id;
+                    const select = () => setSelectedCell({ sectionId: section.id, rowId: row.id });
+                    return (
+                      <tr key={row.id} style={{ background: isSelected ? "#f8fafc" : undefined }}>
+                        <td className="tdCenter">
+                          <input className="billCell" style={{ width: 36, textAlign: "center" }} value={row.sr} readOnly tabIndex={-1} onFocus={select} />
+                        </td>
+                        <td>
+                          <input
+                            className="billCell"
+                            value={row.particulars}
+                            onChange={e => updateRow(section.id, row.id, "particulars", e.target.value)}
+                            placeholder="Description of work / material…"
+                            onFocus={select}
+                            style={{
+                              fontWeight: row.bold ? "bold" : "normal",
+                              fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
+                              textAlign: row.align || "left"
+                            }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            className="billCell"
+                            value={row.size}
+                            onChange={e => updateRow(section.id, row.id, "size", e.target.value)}
+                            placeholder="e.g. 3x4 or 12"
+                            onFocus={select}
+                          />
+                          {row.size.trim() && (() => {
+                            const converted = isManual ? row.size : convertAllPointValues(row.size);
+                            const parsed = parseSize(row.size, !isManual);
+                            const changed = !isManual && converted !== row.size;
+                            return (
+                              <small className="sizeHint">
+                                {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
+                                {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
+                              </small>
+                            );
+                          })()}
+                        </td>
+                        <td className="tdRight">
+                          <input
+                            className="billCell"
+                            style={{ textAlign: "right" }}
+                            type="number"
+                            min={0}
+                            value={row.quantity || ""}
+                            onChange={e => updateRow(section.id, row.id, "quantity", parseFloat(e.target.value) || 0)}
+                            placeholder="0"
+                            onFocus={select}
+                          />
+                        </td>
+                        <td className="tdCenter">
+                          <input
+                            className="billCell"
+                            style={{ textAlign: "center" }}
+                            type="number"
+                            min={0}
+                            value={row.rate || ""}
+                            onChange={e => updateRow(section.id, row.id, "rate", parseFloat(e.target.value) || 0)}
+                            placeholder="0"
+                            onFocus={select}
+                          />
+                        </td>
+                        <td className="tdAmount">
+                          <input
+                            className="billCell"
+                            style={{ textAlign: "center", background: "transparent" }}
+                            type="number"
+                            min={0}
+                            value={row.amount || ""}
+                            onChange={e => updateRow(section.id, row.id, "amount", parseFloat(e.target.value) || 0)}
+                            placeholder="0"
+                            onFocus={select}
+                          />
+                        </td>
+                        <td>
+                          <button
+                            className="miniButton danger"
+                            title="Remove row"
+                            onClick={() => deleteRow(section.id, row.id)}
+                            style={{ fontSize: 16, border: "none" }}
+                          >×</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
 
-          <button className="addRowBtn" onClick={addRow}>
-            <FilePlus2 size={16} /> Add Row
-          </button>
+            <div className="tableFooterArea">
+              <div className="tableFooterLeft">
+                <div className="sectionTotalLine">
+                  <span className="summaryLabel">{section.title ? `${section.title} total:` : "Table total:"}</span>
+                  <span className="summaryValue">{money(sectionTotal(section))}</span>
+                </div>
+              </div>
+              <div className="tableFooterRight">
+                <button className="addRowBtn" onClick={() => addRow(section.id)}>
+                  <FilePlus2 size={16} /> Add Row
+                </button>
+              </div>
+            </div>
+          </div>
+          );
+        })}
+
+        {/* Add another table */}
+        <button className="addTableBtn" onClick={addTable}>
+          <Plus size={16} /> Add Another Table
+        </button>
+
+        {/* Overall billing summary */}
+        <div className="billTableCard" style={{ marginTop: 4 }}>
+          <div className="tableFooterArea">
+            <div className="tableFooterLeft">
+              <div className="billingSummaryCard">
+                <div className="summaryRow">
+                  <span className="summaryLabel">Grand Total:</span>
+                  <span className="summaryValue">{money(total)}</span>
+                </div>
+                <div className="summaryRow">
+                  <span className="summaryLabel">Advance:</span>
+                  <input
+                    className="advanceCellInput"
+                    type="number"
+                    min={0}
+                    value={billDetails.advance || ""}
+                    onChange={e => updateDetail("advance", parseFloat(e.target.value) || 0)}
+                    placeholder="0"
+                  />
+                </div>
+                <div className="summaryRow balanceRow">
+                  <span className="summaryLabel">Balance:</span>
+                  <span className="summaryValue">{money(balance)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </main>
 
@@ -581,7 +713,7 @@ export function App() {
         <p className="previewLabel">Live Preview</p>
 
         <div className="previewSheet" id="print-area">
-          <BillPreview header={header} rows={rows} billDetails={billDetails} />
+          <BillPreview header={header} sections={sections} billDetails={billDetails} />
         </div>
 
         <div>
@@ -618,13 +750,27 @@ export function App() {
             </div>
             <SupabaseSyncManager
               header={header}
-              rows={rows}
+              rows={sections}
               billDetails={billDetails}
               billTitle={billTitle}
               onLoadBill={(bill) => {
                 setBillTitle(bill.bill_title || "Untitled Bill");
                 setHeader(bill.header);
-                setRows(bill.rows);
+                // Support both the new `sections` format and the legacy flat `rows` format.
+                if (Array.isArray(bill.sections) && bill.sections.length) {
+                  setSections(bill.sections);
+                } else if (Array.isArray(bill.rows) && bill.rows.length) {
+                  // rows could be a flat EditorRow[] (legacy) — wrap into one section.
+                  const looksLikeSections = bill.rows[0] && Array.isArray((bill.rows[0] as any).rows);
+                  if (looksLikeSections) {
+                    setSections(bill.rows as BillSection[]);
+                  } else {
+                    setSections([{ id: uid(), title: "", rows: bill.rows as EditorRow[] }]);
+                  }
+                } else {
+                  setSections(defaultSections());
+                }
+                setSelectedCell(null);
                 setBillDetails({
                   clientName: bill.client_name || "",
                   clientAddress: bill.client_address || "",
@@ -634,7 +780,12 @@ export function App() {
                   note: bill.note || "",
                   showNote: bill.showNote !== false,
                   showSignature: bill.showSignature !== false,
-                  proprietorName: bill.proprietorName || ""
+                  proprietorName: bill.proprietorName || "",
+                  showHeader: bill.showHeader !== false,
+                  showDate: bill.showDate !== false,
+                  showClientDetails: bill.showClientDetails !== false,
+                  showClientAddress: bill.showClientAddress !== false,
+                  showGST: bill.showGST !== false
                 });
                 setDbPanelOpen(false);
               }}
@@ -659,7 +810,7 @@ export function App() {
           { id: "rate", label: "Rate", kind: "number", isRate: true },
           { id: "amount", label: "Amount (₹)", kind: "formula", locked: true, isAmount: true }
         ]}
-        rows={rows.map(r => ({
+        rows={firstRows.map(r => ({
           id: r.id,
           cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, quantity: String(r.quantity), rate: String(r.rate), amount: String(r.amount) }
         }))}
@@ -668,7 +819,7 @@ export function App() {
         onColsChange={() => {}}
         onRowsChange={(updaterOrRows) => {
           if (typeof updaterOrRows === "function") {
-            setRows(prev => {
+            setFirstSectionRows(prev => {
               const prevMapped = prev.map(r => ({
                 id: r.id,
                 cells: { sr: String(r.sr), particulars: r.particulars, size: r.size, quantity: String(r.quantity), rate: String(r.rate), amount: String(r.amount) }
@@ -685,7 +836,7 @@ export function App() {
               }));
             });
           } else {
-            setRows(updaterOrRows.map((r: any) => ({
+            setFirstSectionRows(updaterOrRows.map((r: any) => ({
               id: r.id,
               sr: parseInt(r.cells.sr) || 1,
               particulars: r.cells.particulars || "",

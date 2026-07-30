@@ -87,7 +87,16 @@ export function SupabaseSyncManager({ header, rows, billDetails, billTitle, onLo
         subject: billDetails.subject || "",
         advance: billDetails.advance || 0,
         header,
-        rows
+        rows,
+        note: billDetails.note || "",
+        showNote: billDetails.showNote !== false,
+        showSignature: billDetails.showSignature !== false,
+        proprietorName: billDetails.proprietorName || "",
+        showHeader: billDetails.showHeader !== false,
+        showDate: billDetails.showDate !== false,
+        showClientDetails: billDetails.showClientDetails !== false,
+        showClientAddress: billDetails.showClientAddress !== false,
+        showGST: billDetails.showGST !== false
       });
       setSuccessMsg(`Bill saved to cloud!`);
       setTimeout(() => setSuccessMsg(null), 3000);
