@@ -26,6 +26,8 @@ export type BillTable = {
   title: string;
   columns: BillColumn[];
   rows: BillRow[];
+  // Which page this table prints on (see BillSection.page).
+  page?: number;
 };
 
 // Bill details that change per bill
@@ -72,4 +74,7 @@ export type BillSection = {
   // "manual"   = treat sizes as plain decimals / math (no conversion)
   // Defaults to "template" when missing (backward compatible).
   mode?: "template" | "manual";
+  // Which page this table prints on. Tables sharing a number group on the same
+  // page; a higher number than the previous table starts a new page. Default 1.
+  page?: number;
 };

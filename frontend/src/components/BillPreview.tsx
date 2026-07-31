@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { BillDetails, BillSection, HeaderTemplate } from "../types";
 import { money, formatNumber } from "../lib/billMath";
 import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
@@ -82,7 +83,9 @@ function SectionTable({ section }: { section: BillSection }) {
               </td>
             </tr>
           )}
-          {rows.map(row => (
+          {rows.map(row => {
+            const isLS = (row.size || "").trim().toUpperCase() === "LS";
+            return (
             <tr key={row.id}>
               <td className="pbSrCell">{row.sr}</td>
               <td
@@ -95,24 +98,31 @@ function SectionTable({ section }: { section: BillSection }) {
               >
                 {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
               </td>
-              <td className="pbSizeCell">
-                {row.size ? (() => {
-                  const { original, converted } = convertSizeDisplay(row.size, applyInch);
-                  return (
-                    <>
-                      <span className="pbSizeRaw">{original}</span>
-                      {converted && (
-                        <span className="pbSizeConverted">→ {converted}</span>
-                      )}
-                    </>
-                  );
-                })() : <span style={{ color: "#bbb" }}>—</span>}
-              </td>
-              <td className="pbQtyCell">{row.quantity || "—"}</td>
-              <td className="pbRateCell">{row.rate > 0 ? formatNumber(row.rate) : "—"}</td>
+              {isLS ? (
+                <td colSpan={3} className="pbLsCell">LS</td>
+              ) : (
+                <>
+                  <td className="pbSizeCell">
+                    {row.size ? (() => {
+                      const { original, converted } = convertSizeDisplay(row.size, applyInch);
+                      return (
+                        <>
+                          <span className="pbSizeRaw">{original}</span>
+                          {converted && (
+                            <span className="pbSizeConverted">→ {converted}</span>
+                          )}
+                        </>
+                      );
+                    })() : <span style={{ color: "#bbb" }}>—</span>}
+                  </td>
+                  <td className="pbQtyCell">{row.quantity || "—"}</td>
+                  <td className="pbRateCell">{row.rate > 0 ? formatNumber(row.rate) : "—"}</td>
+                </>
+              )}
               <td className="pbAmtCell">{row.amount > 0 ? money(row.amount) : "—"}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
         <tfoot>
           <tr className="pbTotalRow">
@@ -195,9 +205,19 @@ export function BillPreview({ header, sections, billDetails }: Props) {
       {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}
 
       {/* Section tables — each with its own top-left label + in-table Total row */}
-      {sections.map(section => (
-        <SectionTable key={section.id} section={section} />
-      ))}
+      {sections.map((section, i) => {
+        const thisPage = section.page ?? 1;
+        const prevPage = i > 0 ? (sections[i - 1].page ?? 1) : thisPage;
+        const showBreak = i > 0 && thisPage > prevPage;
+        return (
+          <Fragment key={section.id}>
+            {showBreak && (
+              <div className="pbPageBreakMark"><span>Page {thisPage}</span></div>
+            )}
+            <SectionTable section={section} />
+          </Fragment>
+        );
+      })}
 
       {/* Grand totals */}
       <div className="pbSummaryContainer">

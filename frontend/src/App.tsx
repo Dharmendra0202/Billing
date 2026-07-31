@@ -1,12 +1,12 @@
-import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator } from "lucide-react";
-import { useMemo, useState } from "react";
+import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator, CheckCircle2, Loader2, SeparatorHorizontal } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader } from "./data/initialBill";
-import { money, parseSize } from "./lib/billMath";
+import { money, parseSize, toTitleCase } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
 import type { BillDetails, BillSection, BillTable, EditorRow, HeaderTemplate } from "./types";
@@ -16,6 +16,7 @@ function sectionToBillTable(section: BillSection): BillTable {
   return {
     id: section.id,
     title: section.title,
+    page: section.page,
     columns: [
       { id: "sr",          label: "Sr. No",      kind: "number" },
       { id: "particulars", label: "Particulars", kind: "text"   },
@@ -92,7 +93,7 @@ export function App() {
 
   const [sections, setSections] = useState<BillSection[]>(loadInitialSections);
 
-  const [billTitle, setBillTitle] = useState("New Bill");
+  const [billTitle, setBillTitle] = useState(() => localStorage.getItem("bill.title") || "New Bill");
   const [leftTab, setLeftTab] = useState<"details" | "scanner">("details");
   const [dbPanelOpen, setDbPanelOpen] = useState(false);
   const [leftWidth, setLeftWidth] = useState(320);
@@ -100,6 +101,36 @@ export function App() {
   const [isResizingLeft, setIsResizingLeft] = useState(false);
   const [isResizingRight, setIsResizingRight] = useState(false);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
+  const [fitToOnePage, setFitToOnePage] = useState(false);
+
+  // ── Autosave ────────────────────────────────────────────────────────────────
+  // Persist every change immediately so a page refresh (or accidental reload)
+  // never loses the work in progress. Restored automatically on next load.
+  useEffect(() => {
+    localStorage.setItem("bill.header", JSON.stringify(header));
+  }, [header]);
+
+  useEffect(() => {
+    localStorage.setItem("bill.details", JSON.stringify(billDetails));
+  }, [billDetails]);
+
+  useEffect(() => {
+    localStorage.setItem("bill.sections", JSON.stringify(sections));
+    // Drop the legacy single-table key so it can't shadow the new format.
+    localStorage.removeItem("bill.rows");
+  }, [sections]);
+
+  useEffect(() => {
+    localStorage.setItem("bill.title", billTitle);
+  }, [billTitle]);
+
+  // Visual autosave status for the header pill ("Saving…" briefly, then "Saved").
+  const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
+  useEffect(() => {
+    setSaveState("saving");
+    const t = setTimeout(() => setSaveState("saved"), 500);
+    return () => clearTimeout(t);
+  }, [header, billDetails, sections, billTitle]);
 
   const startResizingLeft = (mouseDownEvent: React.MouseEvent) => {
     mouseDownEvent.preventDefault();
@@ -160,6 +191,7 @@ export function App() {
     localStorage.setItem("bill.header", JSON.stringify(header));
     localStorage.setItem("bill.details", JSON.stringify(billDetails));
     localStorage.setItem("bill.sections", JSON.stringify(sections));
+    localStorage.setItem("bill.title", billTitle);
     // Remove the legacy single-table key so it doesn't shadow the new format.
     localStorage.removeItem("bill.rows");
   };
@@ -175,6 +207,7 @@ export function App() {
     localStorage.removeItem("bill.details");
     localStorage.removeItem("bill.rows");
     localStorage.removeItem("bill.sections");
+    localStorage.removeItem("bill.title");
   };
 
   // ── Section (table) operations ──────────────────────────────────────────────
@@ -183,7 +216,11 @@ export function App() {
   };
 
   const addTable = () => {
-    setSections(prev => [...prev, { id: uid(), title: `Table ${prev.length + 1}`, rows: [makeRow()], mode: "template" }]);
+    setSections(prev => {
+      // A new table joins the same page as the current last table by default.
+      const lastPage = prev.length ? (prev[prev.length - 1].page ?? 1) : 1;
+      return [...prev, { id: uid(), title: `Table ${prev.length + 1}`, rows: [makeRow()], mode: "template", page: lastPage }];
+    });
   };
 
   // Switch a table between "template" (inch conversion) and "manual" (plain math),
@@ -215,8 +252,26 @@ export function App() {
     setSections(prev => prev.map(s => (s.id === sectionId ? { ...s, title } : s)));
   };
 
+  // Set which page a table prints on (min 1). Tables with the same number group
+  // on one page; a higher number than the previous table starts a new page.
+  const setTablePage = (sectionId: string, page: number) => {
+    const clamped = Math.max(1, Math.floor(page) || 1);
+    setSections(prev => prev.map(s => (s.id === sectionId ? { ...s, page: clamped } : s)));
+  };
+
   const addRow = (sectionId: string) => {
     updateSectionRows(sectionId, rows => recalc([...rows, makeRow()]));
+  };
+
+  // Insert a fresh row immediately below the given row (in-between insert).
+  const insertRowBelow = (sectionId: string, rowId: string) => {
+    updateSectionRows(sectionId, rows => {
+      const index = rows.findIndex(r => r.id === rowId);
+      if (index === -1) return recalc([...rows, makeRow()]);
+      const next = [...rows];
+      next.splice(index + 1, 0, makeRow());
+      return recalc(next);
+    });
   };
 
   const deleteRow = (sectionId: string, rowId: string) => {
@@ -291,7 +346,7 @@ export function App() {
   const handleExport = async (format: "pdf" | "excel" | "word") => {
     const detailsWithAdvance: BillDetails = { ...billDetails, advance: billDetails.advance };
     const exportTables = currentBillTables;
-    if (format === "pdf") await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle);
+    if (format === "pdf") await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage });
     else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle);
     else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle);
   };
@@ -316,6 +371,11 @@ export function App() {
           />
         </div>
         <div className="topHeaderActions">
+          <span className={`saveStatus ${saveState}`} title="Your work is auto-saved in this browser on every change">
+            {saveState === "saving"
+              ? <><Loader2 size={13} className="saveStatusSpin" /> Saving…</>
+              : <><CheckCircle2 size={13} /> Saved</>}
+          </span>
           <button className="hdrBtn" onClick={() => setDbPanelOpen(true)} title="Cloud Database">
             <Database size={16} /> Cloud Db
           </button>
@@ -521,6 +581,32 @@ export function App() {
                 placeholder={sectionIndex === 0 ? "Table label (optional) — e.g. Master Bedroom" : "Table label — e.g. Bedroom"}
               />
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div
+                  className="pageStepper"
+                  title="Which page this table prints on. Give tables the same number to keep them together on one page; increase the number to start a new page."
+                >
+                  <SeparatorHorizontal size={13} />
+                  <span className="pageStepperLabel">Page</span>
+                  <button
+                    className="pageStepperBtn"
+                    onClick={() => setTablePage(section.id, (section.page ?? 1) - 1)}
+                    disabled={(section.page ?? 1) <= 1}
+                    title="Previous page"
+                  >−</button>
+                  <input
+                    className="pageStepperInput"
+                    type="number"
+                    min={1}
+                    value={section.page ?? 1}
+                    onChange={e => setTablePage(section.id, parseInt(e.target.value, 10))}
+                    title="Type the page number for this table"
+                  />
+                  <button
+                    className="pageStepperBtn"
+                    onClick={() => setTablePage(section.id, (section.page ?? 1) + 1)}
+                    title="Next page"
+                  >+</button>
+                </div>
                 <button
                   className={`modeToggleBtn ${isManual ? "manual" : "template"}`}
                   onClick={() => toggleTableMode(section.id)}
@@ -557,7 +643,7 @@ export function App() {
                     <th style={{ width: 100 }} className="thRight">Quantity</th>
                     <th style={{ width: 100 }} className="thCenter">Rate</th>
                     <th style={{ width: 110 }} className="thCenter">Amount</th>
-                    <th style={{ width: 36 }}></th>
+                    <th style={{ width: 60 }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -574,6 +660,10 @@ export function App() {
                             className="billCell"
                             value={row.particulars}
                             onChange={e => updateRow(section.id, row.id, "particulars", e.target.value)}
+                            onBlur={e => {
+                              const tc = toTitleCase(e.target.value);
+                              if (tc !== row.particulars) updateRow(section.id, row.id, "particulars", tc);
+                            }}
                             placeholder="Description of work / material…"
                             onFocus={select}
                             style={{
@@ -640,12 +730,20 @@ export function App() {
                           />
                         </td>
                         <td>
-                          <button
-                            className="miniButton danger"
-                            title="Remove row"
-                            onClick={() => deleteRow(section.id, row.id)}
-                            style={{ fontSize: 16, border: "none" }}
-                          >×</button>
+                          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                            <button
+                              className="miniButton"
+                              title="Insert row below"
+                              onClick={() => insertRowBelow(section.id, row.id)}
+                              style={{ fontSize: 15, border: "none", color: "#2563eb" }}
+                            >+</button>
+                            <button
+                              className="miniButton danger"
+                              title="Remove row"
+                              onClick={() => deleteRow(section.id, row.id)}
+                              style={{ fontSize: 16, border: "none" }}
+                            >×</button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -677,7 +775,7 @@ export function App() {
         </button>
 
         {/* Overall billing summary */}
-        <div className="billTableCard" style={{ marginTop: 4 }}>
+        <div className="billTableCard" style={{ marginTop: 28 }}>
           <div className="tableFooterArea">
             <div className="tableFooterLeft">
               <div className="billingSummaryCard">
@@ -718,6 +816,14 @@ export function App() {
 
         <div>
           <p className="previewLabel" style={{ marginBottom: 8 }}>Export</p>
+          <label className="fitToPageToggle" title="Shrinks each page's tables just enough to fit on their page. Works together with the per-table page numbers: group tables with page numbers, then tick this to auto-fit each page.">
+            <input
+              type="checkbox"
+              checked={fitToOnePage}
+              onChange={e => setFitToOnePage(e.target.checked)}
+            />
+            Shrink each page's tables to fit (PDF)
+          </label>
           <div className="exportButtons">
             <button className="exportBtn pdf" onClick={() => handleExport("pdf")}>
               <FileText size={20} /> PDF

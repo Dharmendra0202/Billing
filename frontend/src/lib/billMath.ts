@@ -196,6 +196,91 @@ export function grandTotal(tables: BillTable[]) {
   }, 0);
 }
 
+// Safely evaluate a basic arithmetic expression (supporting + - * / and
+// parentheses) WITHOUT using eval / new Function — those are blocked by the
+// Content-Security-Policy in packaged Electron builds, which previously made
+// +, - and brackets silently fail. Returns null if the expression is invalid.
+function evaluateArithmetic(expr: string): number | null {
+  let pos = 0;
+  const input = expr;
+
+  const skipSpaces = () => { while (pos < input.length && /\s/.test(input[pos])) pos++; };
+
+  // expression := term (('+' | '-') term)*
+  const parseExpression = (): number | null => {
+    let value = parseTerm();
+    if (value === null) return null;
+    for (;;) {
+      skipSpaces();
+      const op = input[pos];
+      if (op === "+" || op === "-") {
+        pos++;
+        const rhs = parseTerm();
+        if (rhs === null) return null;
+        value = op === "+" ? value + rhs : value - rhs;
+      } else {
+        return value;
+      }
+    }
+  };
+
+  // term := factor (('*' | '/') factor)*
+  const parseTerm = (): number | null => {
+    let value = parseFactor();
+    if (value === null) return null;
+    for (;;) {
+      skipSpaces();
+      const op = input[pos];
+      if (op === "*" || op === "/") {
+        pos++;
+        const rhs = parseFactor();
+        if (rhs === null) return null;
+        if (op === "/") {
+          if (rhs === 0) return null;
+          value = value / rhs;
+        } else {
+          value = value * rhs;
+        }
+      } else {
+        return value;
+      }
+    }
+  };
+
+  // factor := ('+' | '-')? ( number | '(' expression ')' )
+  const parseFactor = (): number | null => {
+    skipSpaces();
+    const sign = input[pos];
+    if (sign === "+" || sign === "-") {
+      pos++;
+      const v = parseFactor();
+      if (v === null) return null;
+      return sign === "-" ? -v : v;
+    }
+    if (input[pos] === "(") {
+      pos++;
+      const v = parseExpression();
+      if (v === null) return null;
+      skipSpaces();
+      if (input[pos] !== ")") return null; // unbalanced
+      pos++;
+      return v;
+    }
+    // number (integer or decimal)
+    const start = pos;
+    while (pos < input.length && /[0-9.]/.test(input[pos])) pos++;
+    if (pos === start) return null;
+    const num = parseFloat(input.slice(start, pos));
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const result = parseExpression();
+  skipSpaces();
+  // Reject if we couldn't consume the whole string (leftover garbage).
+  if (result === null || pos !== input.length) return null;
+  return Number.isFinite(result) ? result : null;
+}
+
 export function parseSize(size: string, applyInchConversion: boolean = true): number {
   const clean = size.trim();
   if (!clean) return 1;
@@ -204,7 +289,7 @@ export function parseSize(size: string, applyInchConversion: boolean = true): nu
   const converted = applyInchConversion ? convertAllPointValues(clean) : clean;
 
   // Replace multiplication characters with standard *
-  let sanitized = converted
+  const sanitized = converted
     .replace(/[x×]/gi, '*')
     // Remove any characters that are not digits, operators, dots, parenthesis, or spaces
     .replace(/[^0-9+\-*/().\s]/g, '')
@@ -212,16 +297,9 @@ export function parseSize(size: string, applyInchConversion: boolean = true): nu
 
   if (!sanitized) return 1;
 
-  try {
-    if (/^[0-9+\-*/().\s]+$/.test(sanitized)) {
-      // Use Function constructor to evaluate safely
-      const result = new Function(`return (${sanitized})`)();
-      const parsedResult = parseFloat(result);
-      return Number.isFinite(parsedResult) ? parsedResult : 1;
-    }
-  } catch (e) {
-    console.error("Math evaluation failed for:", sanitized, e);
-  }
+  // Evaluate with the CSP-safe arithmetic parser (handles + - * / and brackets).
+  const result = evaluateArithmetic(sanitized);
+  if (result !== null) return result;
 
   // Fallback parsing (similar to old parseFloat behavior)
   const match = sanitized.match(/^[0-9.]+/);
@@ -232,3 +310,16 @@ export function parseSize(size: string, applyInchConversion: boolean = true): nu
   return 1;
 }
 
+
+// Title-case a string (capitalise the first letter of each word), while
+// preserving acronyms / all-caps words (TV, AC, POP, NOS, RFT, LS, P.O.P, etc.).
+// e.g. "door frame" -> "Door Frame", "tv panel" -> "Tv Panel", "TV panel" -> "TV Panel".
+export function toTitleCase(input: string): string {
+  return input.replace(/\S+/g, (word) => {
+    const letters = word.replace(/[^A-Za-z]/g, "");
+    // Keep words that are already all-uppercase letters (acronyms like TV, POP).
+    if (letters.length > 0 && letters === letters.toUpperCase()) return word;
+    // Otherwise capitalise the first alphabetic character; leave the rest as typed.
+    return word.replace(/[A-Za-z]/, (c) => c.toUpperCase());
+  });
+}

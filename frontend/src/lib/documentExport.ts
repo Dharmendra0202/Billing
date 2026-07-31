@@ -10,11 +10,31 @@ import {
   WidthType,
   AlignmentType,
   BorderStyle,
-  HeadingLevel
+  HeadingLevel,
+  PageBreak
 } from "docx";
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import type { BillTable, HeaderTemplate, BillDetails } from "../types";
+import { TINOS_REGULAR_BASE64, TINOS_BOLD_BASE64 } from "./tinosFont";
+
+// Register the embedded Tinos TTF (a Times-metric-compatible serif that includes
+// the Indian Rupee glyph U+20B9) under the "times" family name. jsPDF's built-in
+// Times font is WinAnsi-encoded and cannot render ₹ (it falls back to "Rs."), so
+// we override "times" with this Unicode TTF. Existing setFont("times", …) calls
+// then render ₹ correctly with no further changes.
+function registerRupeeFont(doc: jsPDF): void {
+  try {
+    doc.addFileToVFS("Tinos-Regular.ttf", TINOS_REGULAR_BASE64);
+    doc.addFont("Tinos-Regular.ttf", "times", "normal");
+    doc.addFileToVFS("Tinos-Bold.ttf", TINOS_BOLD_BASE64);
+    doc.addFont("Tinos-Bold.ttf", "times", "bold");
+  } catch (e) {
+    // If embedding fails for any reason, jsPDF keeps its built-in Times font.
+    console.error("Failed to embed Rupee-capable font:", e);
+  }
+}
 
 // ============================================
 // PDF Export
@@ -470,10 +490,12 @@ const formatIndianNumber = (amount: number): string => {
   return amount.toLocaleString('en-IN');
 };
 
-// Format currency for PDF (uses Rs. since ₹ is unsupported by jsPDF Times font)
+// Format currency for PDF. Uses the real ₹ (U+20B9) symbol, which renders via the
+// embedded Tinos font registered by registerRupeeFont().
+const RUPEE_SYMBOL = "\u20b9";
 const pdfCurrency = (amount: number): string => {
   const rounded = Math.round(amount * 100) / 100;
-  return "Rs. " + rounded.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "/-";
+  return RUPEE_SYMBOL + " " + rounded.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "/-";
 };
 
 // Format a plain number for PDF, rounded to max 2 decimal places
@@ -486,9 +508,11 @@ export async function exportProfessionalPDF(
   header: HeaderTemplate,
   tables: BillTable[],
   billDetails: BillDetails,
-  filename: string = "bill"
+  filename: string = "bill",
+  options?: { fitToOnePage?: boolean }
 ): Promise<void> {
   const doc = new jsPDF();
+  registerRupeeFont(doc);
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 20;
   let yPos = 10;
@@ -515,7 +539,7 @@ export async function exportProfessionalPDF(
 
     // Business Name
     doc.setFontSize(fsName);
-    doc.setFont("times", "bold");
+    doc.setFont("times", "normal");
     doc.text(header.businessName, pageWidth / 2, yPos, { align: "center" });
     yPos += (fsContact * 0.3527) + 1.5;
 
@@ -592,13 +616,63 @@ export async function exportProfessionalPDF(
     yPos += 12;
   }
 
-  // Subject - Centered
-  doc.setFont("times", "normal");
-  doc.text(`Sub: ${billDetails.subject}`, pageWidth / 2, yPos, { align: "center", maxWidth: pageWidth - 40 });
-  yPos += 12;
+  // Subject - Centered (only when a subject is provided)
+  if (billDetails.subject && billDetails.subject.trim()) {
+    doc.setFont("times", "normal");
+    doc.text(`Sub: ${billDetails.subject}`, pageWidth / 2, yPos, { align: "center", maxWidth: pageWidth - 40 });
+    yPos += 12;
+  }
 
-  // Table geometry (shared by every section table)
-  const colWidths = [15, pageWidth - 2 * margin - 110, 25, 20, 20, 30];
+  // ── Dynamic column widths (shared by every section table) ─────────────────
+  // Measure the content so nothing is truncated. Sr/Quantity/Rate/Amount are
+  // sized to the widest value (or their header); Size is sized to fit its
+  // longest entry; Particulars takes whatever width remains. Size + Particulars
+  // also wrap to multiple lines as a final safety net so text is never cut.
+  const contentWidth = pageWidth - 2 * margin;
+  const measureMax = (texts: string[], style: "normal" | "bold", fs: number): number => {
+    doc.setFont("times", style);
+    doc.setFontSize(fs);
+    return texts.reduce((w, t) => Math.max(w, doc.getTextWidth(t || "")), 0);
+  };
+  const allRowsForWidth = tables.flatMap(t => t.rows);
+  const srTexts = ["Sr. No", ...allRowsForWidth.map((r, i) => String(r.cells.sr || i + 1))];
+  const qtyTexts = ["Quantity", ...allRowsForWidth.map(r => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; })];
+  const rateTexts = ["Rate", ...allRowsForWidth.map(r => { const v = parseFloat(r.cells.rate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; })];
+  // Include each table's subtotal (with the ₹ symbol) so the Amount column is
+  // wide enough for the in-table Total row — the subtotal is usually the largest
+  // number, and it now shows the ₹ symbol too.
+  const tableSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.amount) || 0), 0));
+  const amtTexts = [
+    "Amount",
+    ...allRowsForWidth.map(r => { const v = parseFloat(r.cells.amount) || 0; return v > 0 ? pdfCurrency(v) : "\u2014"; }),
+    ...tableSubtotals.map(s => pdfCurrency(s))
+  ];
+  const sizeTexts = ["Size", ...allRowsForWidth.map(r => { const s = (r.cells.size || "").trim(); return s.toUpperCase() === "LS" ? "" : s; })];
+  const PAD = 5;
+  let srW = Math.min(Math.max(measureMax(srTexts, "bold", 11) + PAD, 12), 24);
+  let qtyW = Math.max(measureMax(qtyTexts, "bold", 11) + PAD, 16);
+  let rateW = Math.max(measureMax(rateTexts, "bold", 11) + PAD, 14);
+  let amtW = Math.max(measureMax(amtTexts, "bold", 11) + PAD, 22);
+  // Guarantee Size + Particulars always keep a usable share of the width. If the
+  // numeric columns would be too greedy (very large numbers), scale them down —
+  // their cells wrap, so the values still show in full over multiple lines.
+  const SIZE_PLUS_PARTICULARS_MIN = 56;
+  const maxNumericTotal = contentWidth - SIZE_PLUS_PARTICULARS_MIN;
+  const numericTotal = srW + qtyW + rateW + amtW;
+  if (numericTotal > maxNumericTotal) {
+    const f = maxNumericTotal / numericTotal;
+    srW *= f; qtyW *= f; rateW *= f; amtW *= f;
+  }
+  const remainingForSizeAndParticulars = contentWidth - (srW + qtyW + rateW + amtW);
+  const PARTICULARS_MIN = 38;
+  const sizePreferred = measureMax(sizeTexts, "normal", 11) + PAD;
+  // Give Size what it needs, but never so much that Particulars drops below its
+  // minimum; clamp within the space that's actually available.
+  let sizeW = Math.min(sizePreferred, remainingForSizeAndParticulars - PARTICULARS_MIN);
+  sizeW = Math.max(sizeW, 18);
+  sizeW = Math.min(sizeW, Math.max(remainingForSizeAndParticulars - 12, 18));
+  const particularsW = Math.max(remainingForSizeAndParticulars - sizeW, 12);
+  const colWidths = [srW, particularsW, sizeW, qtyW, rateW, amtW];
   const colX = [
     margin + 2, // Sr. No
     margin + colWidths[0] + 2, // Particulars
@@ -619,21 +693,29 @@ export async function exportProfessionalPDF(
     pageWidth - margin
   ];
 
-  const headerHeight = 8;
-  const minRowHeight = 8;
+  // Horizontal centres of each column (used when drawing wrapped cell text).
+  const srCenterX = margin + colWidths[0] / 2;
+  const sizeCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] / 2;
+  const qtyCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2;
+  const rateCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2;
+  const amtCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2;
+
+  const headerHeight = 6.5;
+  const minRowHeight = 6;
   const pageBottom = 285;
   const multipleTables = tables.length > 1;
 
   // Draws a shaded, bordered column-header row starting at the current yPos.
   // Returns the y-coordinate at the top of the header (for vertical line drawing).
-  const drawTableHeader = (): number => {
-    const yTopHeader = yPos - 4;
+  const drawTableHeader = (scale: number = 1): number => {
+    const hH = headerHeight * scale;
+    const yTopHeader = yPos - 4 * scale;
     doc.setFillColor(245, 245, 245);
-    doc.rect(margin, yTopHeader, pageWidth - 2 * margin, headerHeight, "F");
+    doc.rect(margin, yTopHeader, pageWidth - 2 * margin, hH, "F");
     doc.setFont("times", "bold");
-    doc.setFontSize(11);
+    doc.setFontSize(11 * scale);
 
-    const yBaseHeader = yTopHeader + headerHeight / 2 + 11 * 0.125;
+    const yBaseHeader = yTopHeader + hH / 2 + 11 * scale * 0.125;
     doc.text("Sr. No", margin + colWidths[0] / 2, yBaseHeader, { align: "center" });
     doc.text("Particulars", margin + colWidths[0] + 2, yBaseHeader, { align: "left" });
     doc.text("Size", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBaseHeader, { align: "center" });
@@ -642,125 +724,311 @@ export async function exportProfessionalPDF(
     doc.text("Amount", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2, yBaseHeader, { align: "center" });
 
     doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
+    doc.setLineWidth(0.2);
     doc.line(margin, yTopHeader, pageWidth - margin, yTopHeader);
-    doc.line(margin, yTopHeader + headerHeight, pageWidth - margin, yTopHeader + headerHeight);
+    doc.line(margin, yTopHeader + hH, pageWidth - margin, yTopHeader + hH);
+    // Header vertical separators (full set)
+    verticalX.forEach(x => doc.line(x, yTopHeader, x, yTopHeader + hH));
 
-    yPos = yTopHeader + headerHeight;
+    yPos = yTopHeader + hH;
     return yTopHeader;
   };
 
-  // Draw vertical grid lines for a page segment (top → bottom).
-  const drawVerticals = (top: number, bottom: number) => {
-    verticalX.forEach(x => doc.line(x, top, x, bottom));
+  // Draw vertical grid lines for a single row segment. For "LS" (lump-sum) rows
+  // the Size/Quantity/Rate separators are omitted so those three columns read
+  // as one merged cell.
+  const drawRowVerticals = (top: number, bottom: number, merged: boolean) => {
+    const idxs = merged ? [0, 1, 2, 5, 6] : [0, 1, 2, 3, 4, 5, 6];
+    idxs.forEach(i => doc.line(verticalX[i], top, verticalX[i], bottom));
   };
 
   // Render one section table. Returns its subtotal.
-  const drawSectionTable = (table: BillTable): number => {
-    // Optional left-aligned label above the table (e.g. "Master Bedroom")
-    if (table.title && table.title.trim()) {
-      if (yPos + 12 > pageBottom) { doc.addPage(); yPos = 20; }
-      doc.setFont("times", "bold");
-      doc.setFontSize(12);
-      doc.text(table.title, margin, yPos, { align: "left" });
-      yPos += 7;
-    }
+  // Behaviour: never split a table across pages. If a table overflows the page by
+  // only a few rows, its rows are shrunk slightly so the whole table fits on one
+  // page. If it overflows by more, the whole table moves to the next page (or, if
+  // it is genuinely taller than a full page, it flows and splits between rows).
+  const drawSectionTable = (table: BillTable, reserveBelow: number = 0, scale: number = 1): number => {
+    const fitMode = scale !== 1;
+    // Pre-measure each data row's natural height (accounts for multi-line text).
+    // Fonts and heights are multiplied by `scale` (1 = normal size).
+    // Normal cell font geometry (Sr / Size / Quantity / Rate / Amount).
+    const nfs = 11 * scale;
+    const nLineSpacing = nfs * 0.405;
+    const nCapHeight = nfs * 0.25;
+    const heightOf = (n: number, lineSpacing: number, capHeight: number) => (n > 0 ? (n - 1) * lineSpacing + capHeight : 0);
 
-    let segmentTop = drawTableHeader();
-    let subtotal = 0;
+    const measured = table.rows.map((row, index) => {
+      const fontSize = (parseInt(row.cells.fontSize) || 11) * scale;
+      const isBold = row.cells.bold === "true";
+      const align = (row.cells.align as any) || "left";
 
-    table.rows.forEach((row, index) => {
-      const particulars = row.cells.particulars || "";
-      const size = row.cells.size || "";
+      // Particulars (per-row font size / weight, wraps within its column).
+      doc.setFont("times", isBold ? "bold" : "normal");
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(row.cells.particulars || "", colWidths[1] - 4);
+      const lineSpacing = fontSize * 0.405;
+      const capHeight = fontSize * 0.25;
+      const textHeight = heightOf(lines.length, lineSpacing, capHeight);
+
+      // Every other cell wraps too, so no value is ever clipped. Measured at 11pt.
+      doc.setFont("times", "normal");
+      doc.setFontSize(nfs);
+      const sizeStr = row.cells.size || "";
+      const isLSRow = sizeStr.trim().toUpperCase() === "LS";
       const quantity = parseFloat(row.cells.quantity) || 0;
       const rate = parseFloat(row.cells.rate) || 0;
       const amount = parseFloat(row.cells.amount) || 0;
-      subtotal += amount;
 
-      const isBold = row.cells.bold === "true";
-      const fontSize = parseInt(row.cells.fontSize) || 11;
-      const align = (row.cells.align as any) || "left";
+      const srLines = doc.splitTextToSize(String(row.cells.sr || index + 1), colWidths[0] - 2);
+      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, colWidths[2] - 3) : [];
+      const qtyLines = !isLSRow ? doc.splitTextToSize(quantity > 0 ? pdfNumber(quantity) : "\u2014", colWidths[3] - 3) : [];
+      const rateLines = !isLSRow ? doc.splitTextToSize(rate > 0 ? pdfNumber(rate) : "\u2014", colWidths[4] - 3) : [];
+      const amtLines = doc.splitTextToSize(amount > 0 ? pdfCurrency(amount) : "\u2014", colWidths[5] - 3);
 
-      // Set custom font for particulars
-      doc.setFont("times", isBold ? "bold" : "normal");
-      doc.setFontSize(fontSize);
+      // Row height fits the tallest cell across all columns.
+      const maxTextHeight = Math.max(
+        textHeight,
+        heightOf(srLines.length, nLineSpacing, nCapHeight),
+        heightOf(sizeLines.length, nLineSpacing, nCapHeight),
+        heightOf(qtyLines.length, nLineSpacing, nCapHeight),
+        heightOf(rateLines.length, nLineSpacing, nCapHeight),
+        heightOf(amtLines.length, nLineSpacing, nCapHeight)
+      );
+      const naturalHeight = Math.max(maxTextHeight + 2.5 * scale, minRowHeight * scale);
 
-      // Handle multi-line particulars
-      const lines = doc.splitTextToSize(particulars, colWidths[1] - 4);
-      const lineSpacing = fontSize * 0.405;
-      const capHeight = fontSize * 0.25;
-      const textHeight = (lines.length - 1) * lineSpacing + capHeight;
-      const rowHeight = Math.max(textHeight + 3.5, minRowHeight);
+      return {
+        row, fontSize, isBold, align, isLS: isLSRow,
+        lines, lineSpacing, capHeight, textHeight, maxTextHeight, naturalHeight,
+        srLines, sizeLines, qtyLines, rateLines, amtLines
+      };
+    });
 
-      // Page break: close current segment's vertical lines, start a fresh header.
-      if (yPos + rowHeight > pageBottom) {
-        drawVerticals(segmentTop, yPos);
+    const labelHeight = ((table.title && table.title.trim()) ? 7 : 0) * scale;
+    const totalRowHeight = minRowHeight * scale;
+    const headerH = headerHeight * scale;
+    const fixedHeight = labelHeight + headerH + totalRowHeight;
+    const rowsNaturalHeight = measured.reduce((h, m) => h + m.naturalHeight, 0);
+    const naturalTableHeight = fixedHeight + rowsNaturalHeight;
+
+    let rowHeights = measured.map(m => m.naturalHeight);
+    let compressed = false;
+
+    if (fitMode) {
+      // The global fit-to-one-page scale already sized this table to fit; draw it
+      // straight through, with no page breaks or per-table compression.
+      compressed = true;
+    } else {
+      // Try to fit all rows into `avail` mm by mildly shrinking row heights. Returns
+      // per-row heights, or null if it can't fit without clipping text (a row is
+      // never shrunk below the height of its own text).
+      const fitRowsInto = (avail: number): number[] | null => {
+        const availableForRows = avail - fixedHeight;
+        if (availableForRows <= 0) return null;
+        if (rowsNaturalHeight <= availableForRows) return measured.map(m => m.naturalHeight);
+        const factor = availableForRows / rowsNaturalHeight;
+        const heights = measured.map(m => Math.max(m.naturalHeight * factor, m.maxTextHeight + 0.6));
+        const totalH = heights.reduce((a, b) => a + b, 0);
+        return totalH <= availableForRows + 0.4 ? heights : null;
+      };
+
+      const maxExtra = minRowHeight * 3; // "a few rows" worth of overflow
+      // Reserve space at the bottom of the page (e.g. for the grand-total summary
+      // that must stay with the last table) so this table never crowds it out.
+      const bottomLimit = pageBottom - reserveBelow;
+      const currentAvailable = bottomLimit - yPos;
+      const freshAvailable = bottomLimit - 20;
+
+      if (naturalTableHeight <= currentAvailable) {
+        // Fits as-is in the space left on the current page.
+      } else {
+        // Doesn't fit here. If it's only slightly over, shrink to fit the current page.
+        let comp: number[] | null = null;
+        if (yPos > 20 && naturalTableHeight - currentAvailable <= maxExtra) {
+          comp = fitRowsInto(currentAvailable);
+        }
+        if (comp) {
+          rowHeights = comp;
+          compressed = true;
+        } else if (yPos > 20 && naturalTableHeight <= freshAvailable) {
+          // Fits wholly on a fresh page — move it there intact.
+          doc.addPage();
+          yPos = 20;
+        } else {
+          // Taller than a full page. Start on a fresh page, then shrink to a single
+          // page if the overflow is small; otherwise let it flow (split cleanly).
+          if (yPos > 20) { doc.addPage(); yPos = 20; }
+          if (naturalTableHeight - (bottomLimit - yPos) <= maxExtra) {
+            const c = fitRowsInto(bottomLimit - yPos);
+            if (c) { rowHeights = c; compressed = true; }
+          }
+        }
+      }
+    }
+
+    // Optional left-aligned label above the table (e.g. "Master Bedroom")
+    if (table.title && table.title.trim()) {
+      doc.setFont("times", "bold");
+      doc.setFontSize(12 * scale);
+      doc.text(table.title, margin, yPos, { align: "left" });
+      yPos += 7 * scale;
+    }
+
+    drawTableHeader(scale);
+    let subtotal = 0;
+
+    measured.forEach((m, index) => {
+      const isLS = m.isLS;
+      const align = m.align;
+      const rowHeight = rowHeights[index];
+
+      // Page break only when the table is flowing (a compressed table always fits).
+      if (!compressed && yPos + rowHeight > pageBottom) {
         doc.addPage();
         yPos = 20;
-        segmentTop = drawTableHeader();
+        drawTableHeader();
       }
 
       const yTop = yPos;
-      const isMultiLine = lines.length > 1;
-      const yBase = isMultiLine
-        ? yTop + rowHeight / 2 - ((lines.length - 1) * lineSpacing) / 2 + capHeight / 2
-        : yTop + rowHeight / 2 + 1.25;
+      // Vertically-centred baseline for a block of `n` lines at the given spacing.
+      const baselineFor = (n: number, lineSpacing: number, capHeight: number) =>
+        yTop + rowHeight / 2 - ((Math.max(n, 1) - 1) * lineSpacing) / 2 + capHeight / 2;
 
-      doc.text(String(row.cells.sr || index + 1), margin + colWidths[0] / 2, yBase, { align: "center" });
+      // Sr. No (normal font, centred, wraps if ever needed).
+      doc.setFont("times", "normal");
+      doc.setFontSize(nfs);
+      doc.text(m.srLines, srCenterX, baselineFor(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
-      // Align particulars correctly
+      // Particulars (per-row font size / weight, honours row alignment).
+      doc.setFont("times", m.isBold ? "bold" : "normal");
+      doc.setFontSize(m.fontSize);
       const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
       const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
-      doc.text(lines, drawX, yBase, { align: alignOpt });
+      doc.text(m.lines, drawX, baselineFor(m.lines.length, m.lineSpacing, m.capHeight), { align: alignOpt });
 
-      // Reset font style for the other cells in the row
+      // Size / Quantity / Rate (or a single merged "LS" cell).
       doc.setFont("times", "normal");
-      doc.setFontSize(11);
+      doc.setFontSize(nfs);
+      if (isLS) {
+        doc.text("LS", (verticalX[2] + verticalX[5]) / 2, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+      } else {
+        const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
+        doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        doc.text(m.qtyLines, qtyCenterX, baselineFor(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        doc.text(m.rateLines, rateCenterX, baselineFor(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
+      }
+      // Amount (always shown; wraps if ever needed).
+      doc.text(m.amtLines, amtCenterX, baselineFor(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
-      // Truncate size to fit column width
-      const sizeText = size ? doc.splitTextToSize(size, colWidths[2] - 2)[0] : "\u2014";
-      doc.text(sizeText, margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBase, { align: "center" });
-      doc.text(quantity > 0 ? pdfNumber(quantity) : "\u2014", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBase, { align: "center" });
-      doc.text(rate > 0 ? pdfNumber(rate) : "\u2014", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2, yBase, { align: "center" });
-      doc.text(amount > 0 ? pdfCurrency(amount) : "\u2014", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2, yBase, { align: "center" });
+      subtotal += parseFloat(m.row.cells.amount) || 0;
 
       yPos += rowHeight;
       // Draw horizontal grid line below the row
       doc.line(margin, yPos, pageWidth - margin, yPos);
+      // Vertical grid lines for this row (merged for LS rows)
+      drawRowVerticals(yTop, yPos, isLS);
     });
 
-    // Close vertical grid lines for the final page segment of this table
-    drawVerticals(segmentTop, yPos);
-
     // In-table Total row: two boxes under the Rate and Amount columns only.
-    const totalRowH = minRowHeight;
-    if (yPos + totalRowH > pageBottom) { doc.addPage(); yPos = 20; }
+    const totalRowH = minRowHeight * scale;
+    if (!compressed && yPos + totalRowH > pageBottom) { doc.addPage(); yPos = 20; }
     const totalTop = yPos;
     const totalBot = yPos + totalRowH;
     doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
+    doc.setLineWidth(0.2);
     // Box borders: Rate column = verticalX[4]..[5], Amount column = verticalX[5]..[6]
     doc.line(verticalX[4], totalTop, verticalX[6], totalTop);
     doc.line(verticalX[4], totalBot, verticalX[6], totalBot);
     doc.line(verticalX[4], totalTop, verticalX[4], totalBot);
     doc.line(verticalX[5], totalTop, verticalX[5], totalBot);
     doc.line(verticalX[6], totalTop, verticalX[6], totalBot);
-    // Box text ("Total" under Rate, summed amount under Amount, no "Rs.")
-    const yBaseTotal = totalTop + totalRowH / 2 + 1.25;
+    // Box text ("Total" under Rate, summed amount with the ₹ symbol under Amount)
+    const yBaseTotal = totalTop + totalRowH / 2 + 1.25 * scale;
     doc.setFont("times", "bold");
-    doc.setFontSize(10);
+    doc.setFontSize(10 * scale);
     doc.text("Total", (verticalX[4] + verticalX[5]) / 2, yBaseTotal, { align: "center" });
-    doc.text(pdfCurrency(subtotal).replace("Rs. ", ""), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
+    doc.text(pdfCurrency(subtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
     yPos = totalBot;
 
     return subtotal;
   };
 
-  // Render every section table
-  tables.forEach((table) => {
-    drawSectionTable(table);
-    yPos += 8;
+  // Grand-total summary footprint (Total + Advance + Balance), reserved below the
+  // last page group so it never gets orphaned on its own page.
+  const GRAND_SUMMARY_RESERVE = 40;
+  const noteReserve = (billDetails.showNote && billDetails.note) ? 20 : 0;
+
+  // Natural (unscaled) printed height of one table.
+  const measureTableNatural = (table: BillTable): number => {
+    let rowsH = 0;
+    table.rows.forEach(row => {
+      const fontSize = parseInt(row.cells.fontSize) || 11;
+      const isBold = row.cells.bold === "true";
+      doc.setFont("times", isBold ? "bold" : "normal");
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(row.cells.particulars || "", colWidths[1] - 4);
+      const lineSpacing = fontSize * 0.405;
+      const capHeight = fontSize * 0.25;
+      const textHeight = (lines.length - 1) * lineSpacing + capHeight;
+      // Account for wrapped Size lines too.
+      const sizeStr = row.cells.size || "";
+      const isLSRow = sizeStr.trim().toUpperCase() === "LS";
+      doc.setFont("times", "normal");
+      doc.setFontSize(11);
+      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, colWidths[2] - 3) : [];
+      const sizeTextHeight = sizeLines.length > 0 ? (sizeLines.length - 1) * (11 * 0.405) + 11 * 0.25 : 0;
+      rowsH += Math.max(Math.max(textHeight, sizeTextHeight) + 2.5, minRowHeight);
+    });
+    const labelH = (table.title && table.title.trim()) ? 7 : 0;
+    return labelH + headerHeight + rowsH + minRowHeight;
+  };
+
+  // Partition tables into page groups using their page numbers. A new group
+  // starts whenever a table's page number is higher than the previous table's.
+  const groups: BillTable[][] = [];
+  tables.forEach((t, i) => {
+    const thisPage = t.page ?? 1;
+    const prevPage = i > 0 ? (tables[i - 1].page ?? 1) : thisPage;
+    if (i === 0 || thisPage > prevPage) groups.push([t]);
+    else groups[groups.length - 1].push(t);
   });
+
+  // When enabled, each page group is shrunk (row heights + fonts) just enough to
+  // fit on its own single page. Groups always begin on a fresh page.
+  const shrinkToFit = options?.fitToOnePage === true;
+
+  groups.forEach((group, gi) => {
+    const isLastGroup = gi === groups.length - 1;
+    if (gi > 0) { doc.addPage(); yPos = 20; }
+
+    let groupScale = 1;
+    if (shrinkToFit) {
+      const naturalGroupHeight =
+        group.reduce((s, t) => s + measureTableNatural(t), 0) + 15 * Math.max(0, group.length - 1);
+      // The last group leaves room for the grand-total summary (+ note/signature).
+      const endLimit = isLastGroup
+        ? (billDetails.showSignature ? 236 : pageBottom - 6) - GRAND_SUMMARY_RESERVE - noteReserve
+        : pageBottom - 6;
+      const availableForGroup = endLimit - yPos;
+      if (availableForGroup > 0 && naturalGroupHeight > availableForGroup) {
+        // Never shrink below 40% (stays readable); if it still won't fit, the
+        // group simply flows to another page as usual.
+        groupScale = Math.max(0.4, availableForGroup / naturalGroupHeight);
+      }
+    }
+    const groupFitActive = groupScale < 1;
+
+    group.forEach((table, ti) => {
+      const isLastTable = ti === group.length - 1;
+      // Reserve room for the grand-total summary below the last table of the last
+      // group — but only at natural size (the fit path already reserved that space).
+      const reserveBelow = (!groupFitActive && isLastGroup && isLastTable) ? GRAND_SUMMARY_RESERVE : 0;
+      drawSectionTable(table, reserveBelow, groupScale);
+      if (!isLastTable) yPos += 15 * groupScale;
+    });
+  });
+
+  // Gap between the last table and the grand-total summary.
+  yPos += 14;
 
   // Draw left-aligned totals below the tables (no box)
   if (yPos + 25 > pageBottom) { doc.addPage(); yPos = 20; }
@@ -824,90 +1092,152 @@ export async function exportProfessionalExcel(
   billDetails: BillDetails,
   filename: string = "bill"
 ): Promise<void> {
-  const wb = XLSX.utils.book_new();
-  const wsData: (string | number)[][] = [];
-
   const tableTotal = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
   const total = tables.reduce((sum, t) => sum + tableTotal(t), 0);
   const balance = total - billDetails.advance;
   const multipleTables = tables.length > 1;
 
-  // Header
-  if (billDetails.showHeader !== false) {
-    wsData.push([header.businessName]);
-    if (header.phone) wsData.push([`Mobile No. ${header.phone}`]);
-    if (header.address) wsData.push([header.address]);
-    if (billDetails.showGST !== false && header.gstNumber) wsData.push([`GST: ${header.gstNumber}`]);
-    if (header.tagline) wsData.push([header.tagline]);
-    wsData.push([]);
-  }
-  
-  if (billDetails.showDate !== false) {
-    wsData.push([`Date: ${billDetails.date}`]);
-    wsData.push([]);
-  }
-  wsData.push(["To,"]);
-  wsData.push([billDetails.clientName]);
-  if (billDetails.showClientAddress !== false) {
-    wsData.push([billDetails.clientAddress]);
-  }
-  wsData.push([]);
-  wsData.push([`Sub: ${billDetails.subject}`]);
-  wsData.push([]);
+  const wb = new ExcelJS.Workbook();
+  // Page setup: fit ALL columns onto one page width so columns never spill onto
+  // a separate page. Height flows naturally (rows are never split mid-row).
+  const ws = wb.addWorksheet("Bill", {
+    pageSetup: {
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      orientation: "portrait",
+      margins: { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 }
+    }
+  });
 
-  // Each section table
+  ws.columns = [
+    { width: 8 }, { width: 45 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 16 }
+  ];
+
+  const LAST_COL = "F";
+  const thin = { style: "thin" as const, color: { argb: "FF000000" } };
+  const cellBorder = { top: thin, left: thin, bottom: thin, right: thin };
+  const headerFill = { type: "pattern" as const, pattern: "solid" as const, fgColor: { argb: "FFF0F0F0" } };
+
+  type BannerOpts = { align?: "left" | "center" | "right"; bold?: boolean; size?: number };
+  const addBanner = (text: string, opts: BannerOpts = {}) => {
+    const row = ws.addRow([text]);
+    ws.mergeCells(`A${row.number}:${LAST_COL}${row.number}`);
+    const cell = row.getCell(1);
+    cell.alignment = { horizontal: opts.align || "center", vertical: "middle", wrapText: true };
+    cell.font = { bold: !!opts.bold, size: opts.size || 11 };
+    return row;
+  };
+  const addSpacer = () => ws.addRow([]);
+
+  // Header / letterhead
+  if (billDetails.showHeader !== false) {
+    addBanner(header.businessName || "", { bold: true, size: 16 });
+    if (header.phone) addBanner(`Mobile No. ${header.phone}`);
+    if (header.address) addBanner(header.address);
+    if (billDetails.showGST !== false && header.gstNumber) addBanner(`GST: ${header.gstNumber}`);
+    if (header.tagline) addBanner(header.tagline, { size: 10 });
+    addSpacer();
+  }
+
+  if (billDetails.showDate !== false) {
+    addBanner(`Date: ${billDetails.date}`, { align: "right" });
+  }
+
+  if (billDetails.showClientDetails !== false) {
+    ws.addRow(["To,"]);
+    const cn = ws.addRow([billDetails.clientName || ""]);
+    cn.getCell(1).font = { bold: true };
+    if (billDetails.showClientAddress !== false) ws.addRow([billDetails.clientAddress || ""]);
+  }
+  addSpacer();
+
+  if (billDetails.subject && billDetails.subject.trim()) {
+    ws.addRow([`Sub: ${billDetails.subject}`]);
+    addSpacer();
+  }
+
   tables.forEach((table) => {
-    // Optional table label (e.g. "Master Bedroom")
+    // Optional left-aligned table label (e.g. "Master Bedroom")
     if (table.title && table.title.trim()) {
-      wsData.push([table.title]);
+      const t = ws.addRow([table.title]);
+      t.getCell(1).font = { bold: true, size: 12 };
     }
 
-    // Table header
-    wsData.push(["Sr. No", "Particulars", "Size", "Quantity", "Rate", "Amount"]);
-
-    // Table rows
-    table.rows.forEach((row, index) => {
-      const amtVal = parseFloat(row.cells.amount) || 0;
-      wsData.push([
-        row.cells.sr || String(index + 1),
-        row.cells.particulars || "",
-        row.cells.size || "",
-        parseFloat(row.cells.quantity) || 0,
-        parseFloat(row.cells.rate) || 0,
-        amtVal > 0 ? `₹ ${formatIndianNumber(amtVal)}/-` : ""
-      ]);
+    // Column header row
+    const hr = ws.addRow(["Sr. No", "Particulars", "Size", "Quantity", "Rate", "Amount"]);
+    hr.eachCell(c => {
+      c.font = { bold: true };
+      c.fill = headerFill;
+      c.border = cellBorder;
+      c.alignment = { horizontal: "center" };
     });
 
-    // In-table Total row: "Total" under Rate column, summed amount under Amount column
+    // Data rows
+    table.rows.forEach((row, index) => {
+      const amtVal = parseFloat(row.cells.amount) || 0;
+      const qty = parseFloat(row.cells.quantity) || 0;
+      const rate = parseFloat(row.cells.rate) || 0;
+      const isLS = (row.cells.size || "").trim().toUpperCase() === "LS";
+      const dr = ws.addRow([
+        row.cells.sr || String(index + 1),
+        row.cells.particulars || "",
+        isLS ? "LS" : (row.cells.size || ""),
+        isLS ? "" : (qty > 0 ? qty : ""),
+        isLS ? "" : (rate > 0 ? rate : ""),
+        amtVal > 0 ? `${formatIndianNumber(amtVal)}/-` : ""
+      ]);
+      dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
+      [1, 3, 4, 5, 6].forEach(i => { dr.getCell(i).alignment = { horizontal: "center" }; });
+      if (isLS) {
+        // Merge Size + Quantity + Rate into one centered "LS" cell
+        ws.mergeCells(`C${dr.number}:E${dr.number}`);
+        dr.getCell(3).alignment = { horizontal: "center" };
+      }
+    });
+
+    // In-table Total row ("Total" under Rate, summed amount under Amount)
     const sub = tableTotal(table);
-    wsData.push(["", "", "", "", "Total", `${formatIndianNumber(sub)}/-`]);
-    wsData.push([]);
+    const tr = ws.addRow(["", "", "", "", "Total", `${formatIndianNumber(sub)}/-`]);
+    [5, 6].forEach(i => {
+      tr.getCell(i).font = { bold: true };
+      tr.getCell(i).border = cellBorder;
+      tr.getCell(i).alignment = { horizontal: "center" };
+    });
+    addSpacer();
   });
 
   // Grand totals
-  wsData.push(["", "", "", "", multipleTables ? "Grand Total" : "Total", total > 0 ? `₹ ${formatIndianNumber(total)}/-` : "₹ 0/-"]);
-  wsData.push(["", "", "", "", "Advance", billDetails.advance > 0 ? `₹ ${formatIndianNumber(billDetails.advance)}/-` : "₹ 0/-"]);
-  wsData.push(["", "", "", "", "Balance", balance > 0 ? `₹ ${formatIndianNumber(balance)}/-` : "₹ 0/-"]);
-  wsData.push([]);
+  const grand = ws.addRow(["", "", "", "", multipleTables ? "Grand Total" : "Total", `${formatIndianNumber(total)}/-`]);
+  const adv = ws.addRow(["", "", "", "", "Advance", `${formatIndianNumber(billDetails.advance)}/-`]);
+  const bal = ws.addRow(["", "", "", "", "Balance", `${formatIndianNumber(balance)}/-`]);
+  [grand, adv, bal].forEach(r => {
+    r.getCell(5).font = { bold: true };
+    r.getCell(6).font = { bold: true };
+    r.getCell(6).alignment = { horizontal: "center" };
+  });
+  addSpacer();
 
   // Note
   if (billDetails.showNote && billDetails.note) {
-    wsData.push(["Note."]);
-    wsData.push([billDetails.note]);
-    wsData.push([]);
+    const n = ws.addRow(["Note."]);
+    n.getCell(1).font = { bold: true };
+    ws.addRow([billDetails.note]);
+    addSpacer();
   }
 
   // Signature
   if (billDetails.showSignature) {
-    wsData.push([`Proprietor: ${billDetails.proprietorName}`]);
-    wsData.push(["Authorised Signatory"]);
+    addSpacer();
+    ws.addRow(["", "", "", "", "", `Proprietor: ${billDetails.proprietorName}`]);
+    ws.addRow(["", "", "", "", "", "Authorised Signatory"]);
   }
 
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws["!cols"] = [{ wch: 10 }, { wch: 45 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 15 }];
-  
-  XLSX.utils.book_append_sheet(wb, ws, "Bill");
-  XLSX.writeFile(wb, `${filename}.xlsx`);
+  const buffer = await wb.xlsx.writeBuffer();
+  saveAs(
+    new Blob([buffer as any], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    `${filename}.xlsx`
+  );
 }
 
 export async function exportProfessionalWord(
@@ -931,7 +1261,7 @@ export async function exportProfessionalWord(
     // Business Name with a top border (single line above name)
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: header.businessName, bold: true, size: fsName * 2 })],
+        children: [new TextRun({ text: header.businessName, bold: false, size: fsName * 2 })],
         alignment: AlignmentType.CENTER,
         spacing: { before: 0, after: 0 },
         border: {
@@ -1040,7 +1370,15 @@ export async function exportProfessionalWord(
     });
 
   // Render each section table
-  tables.forEach((table) => {
+  tables.forEach((table, i) => {
+    // Manual paging: start a new page when this table's page number is higher
+    // than the previous table's.
+    const thisPage = table.page ?? 1;
+    const prevPage = i > 0 ? (tables[i - 1].page ?? 1) : thisPage;
+    if (i > 0 && thisPage > prevPage) {
+      children.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+
     // Optional left-aligned label above the table (e.g. "Master Bedroom")
     if (table.title && table.title.trim()) {
       children.push(
@@ -1062,36 +1400,38 @@ export async function exportProfessionalWord(
       const isBold = row.cells.bold === "true";
       const fontSize = parseInt(row.cells.fontSize) || 11;
       const align = (row.cells.align as any) || "left";
+      const isLS = (row.cells.size || "").trim().toUpperCase() === "LS";
 
       let wordAlign: any = AlignmentType.LEFT;
       if (align === "center") wordAlign = AlignmentType.CENTER;
       if (align === "right") wordAlign = AlignmentType.RIGHT;
 
-      tableRows.push(
-        new TableRow({
-          children: [
-            new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] }),
+      const srCell = new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] });
+      const particularsCell = new TableCell({
+        children: [
+          new Paragraph({
+            children: [new TextRun({ text: row.cells.particulars || "", bold: isBold, size: fontSize * 2 })],
+            alignment: wordAlign
+          })
+        ]
+      });
+      const amountCell = new TableCell({ children: [new Paragraph({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", alignment: AlignmentType.CENTER })] });
+
+      const middleCells = isLS
+        ? [
+            // Merge Size + Quantity + Rate into one centered "LS" cell
             new TableCell({
-              children: [
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: row.cells.particulars || "",
-                      bold: isBold,
-                      size: fontSize * 2
-                    })
-                  ],
-                  alignment: wordAlign
-                })
-              ]
-            }),
+              columnSpan: 3,
+              children: [new Paragraph({ children: [new TextRun({ text: "LS" })], alignment: AlignmentType.CENTER })]
+            })
+          ]
+        : [
             new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
             new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? String(qtyVal) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? formatIndianNumber(rateVal) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", alignment: AlignmentType.CENTER })] })
-          ]
-        })
-      );
+            new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? formatIndianNumber(rateVal) : "—", alignment: AlignmentType.CENTER })] })
+          ];
+
+      tableRows.push(new TableRow({ children: [srCell, particularsCell, ...middleCells, amountCell] }));
     });
 
     // In-table Total row: "Total" under Rate column, summed amount under Amount column
