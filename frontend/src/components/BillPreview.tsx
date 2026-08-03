@@ -1,7 +1,19 @@
 import { Fragment } from "react";
-import type { BillDetails, BillSection, HeaderTemplate } from "../types";
+import type { BillDetails, BillSection, ColumnLabels, HeaderTemplate } from "../types";
+import { defaultColumnLabels } from "../types";
 import { money, formatNumber } from "../lib/billMath";
 import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
+
+// Format a date string (YYYY-MM-DD or any parseable) as DD/MM/YYYY for display.
+function formatDate(dateStr: string): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr; // fallback: show as-is
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
 
 type Row = {
   id: string;
@@ -20,6 +32,7 @@ type Props = {
   header: HeaderTemplate;
   sections: BillSection[];
   billDetails: BillDetails;
+  columnLabels?: ColumnLabels;
 };
 
 // Convert each part of a size expression and return both original + converted display
@@ -54,7 +67,7 @@ function hasConvertiblePoints(size: string): boolean {
 }
 
 // Renders a single section table (with an optional top-left label).
-function SectionTable({ section }: { section: BillSection }) {
+function SectionTable({ section, cols }: { section: BillSection; cols: ColumnLabels }) {
   const rows = section.rows as Row[];
   const subtotal = rows.reduce((s, r) => s + r.amount, 0);
   const applyInch = (section.mode ?? "template") !== "manual";
@@ -67,12 +80,12 @@ function SectionTable({ section }: { section: BillSection }) {
       <table className="pbTable">
         <thead>
           <tr>
-            <th className="pbThSr">Sr. No</th>
-            <th className="pbThParticulars">Particulars</th>
-            <th className="pbThSize">Size</th>
-            <th className="pbThQty">Quantity</th>
-            <th className="pbThRate">Rate</th>
-            <th className="pbThAmt">Amount</th>
+            <th className="pbThSr">{cols.sr}</th>
+            <th className="pbThParticulars">{cols.particulars}</th>
+            <th className="pbThSize">{cols.size}</th>
+            <th className="pbThQty">{cols.quantity}</th>
+            <th className="pbThRate">{cols.rate}</th>
+            <th className="pbThAmt">{cols.amount}</th>
           </tr>
         </thead>
         <tbody>
@@ -136,10 +149,14 @@ function SectionTable({ section }: { section: BillSection }) {
   );
 }
 
-export function BillPreview({ header, sections, billDetails }: Props) {
+export function BillPreview({ header, sections, billDetails, columnLabels }: Props) {
+  const cols = columnLabels ?? defaultColumnLabels;
   const total = sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0);
   const balance = total - billDetails.advance;
   const multipleTables = sections.length > 1;
+  const showAdvance = billDetails.showAdvance !== false;
+  const showBalance = billDetails.showBalance !== false;
+  const showGrandTotal = billDetails.showGrandTotal !== false;
 
   return (
     <div style={{ paddingTop: billDetails.showHeader === false ? "12px" : "0" }}>
@@ -187,7 +204,7 @@ export function BillPreview({ header, sections, billDetails }: Props) {
 
       {/* Date */}
       {billDetails.showDate !== false && (
-        <p className="pbDate">Date: {billDetails.date}</p>
+        <p className="pbDate">Date: {formatDate(billDetails.date)}</p>
       )}
 
       {/* Client */}
@@ -214,7 +231,7 @@ export function BillPreview({ header, sections, billDetails }: Props) {
             {showBreak && (
               <div className="pbPageBreakMark"><span>Page {thisPage}</span></div>
             )}
-            <SectionTable section={section} />
+            <SectionTable section={section} cols={cols} />
           </Fragment>
         );
       })}
@@ -223,18 +240,24 @@ export function BillPreview({ header, sections, billDetails }: Props) {
       <div className="pbSummaryContainer">
         <table className="pbSummaryTable">
           <tbody>
-            <tr>
-              <td className="pbSummaryLabel"><strong>{multipleTables ? "Grand Total" : "Total"}</strong></td>
-              <td className="pbSummaryVal"><strong>{money(total)}</strong></td>
-            </tr>
-            <tr>
-              <td className="pbSummaryLabel">Advance</td>
-              <td className="pbSummaryVal">{money(billDetails.advance)}</td>
-            </tr>
-            <tr className="pbSummaryBalanceRow">
-              <td className="pbSummaryLabel"><strong>Balance</strong></td>
-              <td className="pbSummaryVal" style={{ color: "#15803d" }}><strong>{money(balance)}</strong></td>
-            </tr>
+            {showGrandTotal && (
+              <tr>
+                <td className="pbSummaryLabel"><strong>{multipleTables ? "Grand Total:" : "Total:"}</strong></td>
+                <td className="pbSummaryVal"><strong>{money(total)}</strong></td>
+              </tr>
+            )}
+            {showAdvance && (
+              <tr>
+                <td className="pbSummaryLabel">Advance:</td>
+                <td className="pbSummaryVal">{money(billDetails.advance)}</td>
+              </tr>
+            )}
+            {showBalance && (
+              <tr className="pbSummaryBalanceRow">
+                <td className="pbSummaryLabel"><strong>Balance:</strong></td>
+                <td className="pbSummaryVal" style={{ color: "#15803d" }}><strong>{money(balance)}</strong></td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

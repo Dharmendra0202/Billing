@@ -14,7 +14,7 @@ export const initialHeader: HeaderTemplate = {
 
 // Default bill details - editable per bill
 export const initialBillDetails: BillDetails = {
-  date: new Date().toLocaleDateString('en-IN'),
+  date: new Date().toISOString().slice(0, 10),
   clientName: "",
   clientAddress: "",
   subject: "Bill for Carpentry Work – Materials and Labour Charges",

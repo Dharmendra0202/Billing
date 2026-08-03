@@ -16,6 +16,26 @@ export type BillColumn = {
   kind: "text" | "number";
 };
 
+// Editable labels for the fixed six columns of the bill editor. Shared across all
+// tables and used in the editor, live preview, and PDF/Excel/Word exports.
+export type ColumnLabels = {
+  sr: string;
+  particulars: string;
+  size: string;
+  quantity: string;
+  rate: string;
+  amount: string;
+};
+
+export const defaultColumnLabels: ColumnLabels = {
+  sr: "Sr. No",
+  particulars: "Particulars",
+  size: "Size",
+  quantity: "Quantity",
+  rate: "Rate",
+  amount: "Amount"
+};
+
 export type BillRow = {
   id: string;
   cells: Record<string, string>;
@@ -28,6 +48,9 @@ export type BillTable = {
   rows: BillRow[];
   // Which page this table prints on (see BillSection.page).
   page?: number;
+  // "template" | "manual" — controls whether size values are shown with inch
+  // conversion in exports. Default "template".
+  mode?: "template" | "manual";
 };
 
 // Bill details that change per bill
@@ -40,6 +63,10 @@ export type BillDetails = {
   note: string;
   showSignature: boolean;
   showNote: boolean;
+  // Total is always shown; Advance and Balance can be hidden (default: shown).
+  showAdvance?: boolean;
+  showBalance?: boolean;
+  showGrandTotal?: boolean;
   showClientAddress?: boolean;
   showClientDetails?: boolean;
   showGST?: boolean;

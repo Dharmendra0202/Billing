@@ -1,5 +1,5 @@
-import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator, CheckCircle2, Loader2, SeparatorHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator, CheckCircle2, Loader2, SeparatorHorizontal, FolderOpen } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
@@ -9,7 +9,9 @@ import { initialBillDetails, initialHeader } from "./data/initialBill";
 import { money, parseSize, toTitleCase } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
-import type { BillDetails, BillSection, BillTable, EditorRow, HeaderTemplate } from "./types";
+import { encodeBillMarker, extractBillFromPdf } from "./lib/billFile";
+import { defaultColumnLabels } from "./types";
+import type { BillDetails, BillSection, BillTable, ColumnLabels, EditorRow, HeaderTemplate } from "./types";
 
 // Convert a single section's editor rows → BillTable for export (all 6 columns)
 function sectionToBillTable(section: BillSection): BillTable {
@@ -17,6 +19,7 @@ function sectionToBillTable(section: BillSection): BillTable {
     id: section.id,
     title: section.title,
     page: section.page,
+    mode: section.mode,
     columns: [
       { id: "sr",          label: "Sr. No",      kind: "number" },
       { id: "particulars", label: "Particulars", kind: "text"   },
@@ -102,6 +105,11 @@ export function App() {
   const [isResizingRight, setIsResizingRight] = useState(false);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
   const [fitToOnePage, setFitToOnePage] = useState(false);
+  const [columnLabels, setColumnLabels] = useState<ColumnLabels>(() => {
+    const saved = localStorage.getItem("bill.columns");
+    if (saved) { try { return { ...defaultColumnLabels, ...JSON.parse(saved) }; } catch { /* ignore */ } }
+    return defaultColumnLabels;
+  });
 
   // ── Autosave ────────────────────────────────────────────────────────────────
   // Persist every change immediately so a page refresh (or accidental reload)
@@ -124,13 +132,21 @@ export function App() {
     localStorage.setItem("bill.title", billTitle);
   }, [billTitle]);
 
+  useEffect(() => {
+    localStorage.setItem("bill.columns", JSON.stringify(columnLabels));
+  }, [columnLabels]);
+
+  const updateColumnLabel = (key: keyof ColumnLabels, value: string) => {
+    setColumnLabels(prev => ({ ...prev, [key]: value }));
+  };
+
   // Visual autosave status for the header pill ("Saving…" briefly, then "Saved").
   const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
   useEffect(() => {
     setSaveState("saving");
     const t = setTimeout(() => setSaveState("saved"), 500);
     return () => clearTimeout(t);
-  }, [header, billDetails, sections, billTitle]);
+  }, [header, billDetails, sections, billTitle, columnLabels]);
 
   const startResizingLeft = (mouseDownEvent: React.MouseEvent) => {
     mouseDownEvent.preventDefault();
@@ -192,6 +208,7 @@ export function App() {
     localStorage.setItem("bill.details", JSON.stringify(billDetails));
     localStorage.setItem("bill.sections", JSON.stringify(sections));
     localStorage.setItem("bill.title", billTitle);
+    localStorage.setItem("bill.columns", JSON.stringify(columnLabels));
     // Remove the legacy single-table key so it doesn't shadow the new format.
     localStorage.removeItem("bill.rows");
   };
@@ -203,6 +220,8 @@ export function App() {
     setSections(defaultSections());
     setSelectedCell(null);
     setBillTitle("New Bill");
+    setColumnLabels(defaultColumnLabels);
+    localStorage.removeItem("bill.columns");
     localStorage.removeItem("bill.header");
     localStorage.removeItem("bill.details");
     localStorage.removeItem("bill.rows");
@@ -346,9 +365,37 @@ export function App() {
   const handleExport = async (format: "pdf" | "excel" | "word") => {
     const detailsWithAdvance: BillDetails = { ...billDetails, advance: billDetails.advance };
     const exportTables = currentBillTables;
-    if (format === "pdf") await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage });
-    else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle);
-    else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle);
+    if (format === "pdf") {
+      // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
+      const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels });
+      await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed }, columnLabels);
+    }
+    else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels);
+    else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels);
+  };
+
+  // Open a bill PDF that was exported from this app and restore it for editing.
+  const openPdfInputRef = useRef<HTMLInputElement>(null);
+  const handleOpenPdf = async (file: File) => {
+    try {
+      const buf = await file.arrayBuffer();
+      const data = extractBillFromPdf(buf);
+      if (!data || !Array.isArray(data.sections) || data.sections.length === 0) {
+        alert(
+          "This PDF can't be opened for editing.\n\nOnly PDFs downloaded from Bill AI carry the editable data. " +
+          "If this file was created elsewhere or re-saved in another PDF editor, use the AI Scanner instead."
+        );
+        return;
+      }
+      setHeader(data.header ?? initialHeader);
+      setBillDetails({ ...initialBillDetails, ...(data.billDetails ?? {}) });
+      setSections(data.sections as BillSection[]);
+      setBillTitle(typeof data.billTitle === "string" ? data.billTitle : "Untitled Bill");
+      setColumnLabels({ ...defaultColumnLabels, ...(data.columnLabels ?? {}) });
+      setSelectedCell(null);
+    } catch {
+      alert("Could not read this PDF. Please make sure it's a bill PDF exported from this app.");
+    }
   };
 
   const updateDetail = <K extends keyof BillDetails>(key: K, value: BillDetails[K]) => {
@@ -376,9 +423,6 @@ export function App() {
               ? <><Loader2 size={13} className="saveStatusSpin" /> Saving…</>
               : <><CheckCircle2 size={13} /> Saved</>}
           </span>
-          <button className="hdrBtn" onClick={() => setDbPanelOpen(true)} title="Cloud Database">
-            <Database size={16} /> Cloud Db
-          </button>
           <button className="hdrBtn" onClick={() => setLeftTab("scanner")}>
             <Scan size={16} /> Scan Bill
           </button>
@@ -420,7 +464,7 @@ export function App() {
 
               <label>
                 Date
-                <input type="text" value={billDetails.date} onChange={e => updateDetail("date", e.target.value)} />
+                <input type="date" value={billDetails.date} onChange={e => updateDetail("date", e.target.value)} />
               </label>
               
               {billDetails.showClientDetails !== false && (
@@ -482,6 +526,14 @@ export function App() {
                 Show GST Number
               </label>
               <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showAdvance !== false} onChange={e => updateDetail("showAdvance", e.target.checked)} />
+                Show Advance (Total always shows)
+              </label>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showBalance !== false} onChange={e => updateDetail("showBalance", e.target.checked)} />
+                Show Balance
+              </label>
+              <label className="toggleRow">
                 <input type="checkbox" checked={billDetails.showNote} onChange={e => updateDetail("showNote", e.target.checked)} />
                 Show Note section
               </label>
@@ -501,6 +553,42 @@ export function App() {
                   <input value={billDetails.proprietorName} onChange={e => updateDetail("proprietorName", e.target.value)} placeholder="Proprietor Name" />
                 </label>
               )}
+              <hr style={{ border: "none", borderTop: "1px solid #e2e8f0", margin: "10px 0" }} />
+              <span className="cardTitle" style={{ fontSize: 12, marginBottom: 6, display: "block" }}>Totals Section</span>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showGrandTotal !== false} onChange={e => updateDetail("showGrandTotal", e.target.checked)} />
+                Show Grand Total
+              </label>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showAdvance !== false} onChange={e => updateDetail("showAdvance", e.target.checked)} />
+                Show Advance
+              </label>
+              <label className="toggleRow">
+                <input type="checkbox" checked={billDetails.showBalance !== false} onChange={e => updateDetail("showBalance", e.target.checked)} />
+                Show Balance
+              </label>
+            </div>
+
+            {/* Cloud Db & Open PDF section */}
+            <div className="card">
+              <div className="cardHeader">
+                <span className="cardTitle">Open / Import</span>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="hdrBtn" onClick={() => setDbPanelOpen(true)} title="Cloud Database" style={{ flex: 1 }}>
+                  <Database size={16} /> Cloud Db
+                </button>
+                <input
+                  ref={openPdfInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  style={{ display: "none" }}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleOpenPdf(f); e.currentTarget.value = ""; }}
+                />
+                <button className="hdrBtn" onClick={() => openPdfInputRef.current?.click()} title="Open a bill PDF exported from this app and edit it" style={{ flex: 1 }}>
+                  <FolderOpen size={16} /> Open PDF
+                </button>
+              </div>
             </div>
           </div>
         ) : (
@@ -637,12 +725,12 @@ export function App() {
               <table className="billTable">
                 <thead>
                   <tr>
-                    <th style={{ width: 44 }} className="thCenter">Sr.</th>
-                    <th>Particulars</th>
-                    <th style={{ width: 120 }}>Size</th>
-                    <th style={{ width: 100 }} className="thRight">Quantity</th>
-                    <th style={{ width: 100 }} className="thCenter">Rate</th>
-                    <th style={{ width: 110 }} className="thCenter">Amount</th>
+                    <th style={{ width: 44 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.sr} onChange={e => updateColumnLabel("sr", e.target.value)} title="Click to rename this column" /></th>
+                    <th><input className="colHeaderInput" value={columnLabels.particulars} onChange={e => updateColumnLabel("particulars", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: 120 }}><input className="colHeaderInput" value={columnLabels.size} onChange={e => updateColumnLabel("size", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.rate} onChange={e => updateColumnLabel("rate", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: 110 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.amount} onChange={e => updateColumnLabel("amount", e.target.value)} title="Click to rename this column" /></th>
                     <th style={{ width: 60 }}></th>
                   </tr>
                 </thead>
@@ -780,24 +868,28 @@ export function App() {
             <div className="tableFooterLeft">
               <div className="billingSummaryCard">
                 <div className="summaryRow">
-                  <span className="summaryLabel">Grand Total:</span>
+                  <span className="summaryLabel">{sections.length > 1 ? "Grand Total:" : "Total:"}</span>
                   <span className="summaryValue">{money(total)}</span>
                 </div>
-                <div className="summaryRow">
-                  <span className="summaryLabel">Advance:</span>
-                  <input
-                    className="advanceCellInput"
-                    type="number"
-                    min={0}
-                    value={billDetails.advance || ""}
-                    onChange={e => updateDetail("advance", parseFloat(e.target.value) || 0)}
-                    placeholder="0"
-                  />
-                </div>
-                <div className="summaryRow balanceRow">
-                  <span className="summaryLabel">Balance:</span>
-                  <span className="summaryValue">{money(balance)}</span>
-                </div>
+                {billDetails.showAdvance !== false && (
+                  <div className="summaryRow">
+                    <span className="summaryLabel">Advance:</span>
+                    <input
+                      className="advanceCellInput"
+                      type="number"
+                      min={0}
+                      value={billDetails.advance || ""}
+                      onChange={e => updateDetail("advance", parseFloat(e.target.value) || 0)}
+                      placeholder="0"
+                    />
+                  </div>
+                )}
+                {billDetails.showBalance !== false && (
+                  <div className="summaryRow balanceRow">
+                    <span className="summaryLabel">Balance:</span>
+                    <span className="summaryValue">{money(balance)}</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -811,7 +903,7 @@ export function App() {
         <p className="previewLabel">Live Preview</p>
 
         <div className="previewSheet" id="print-area">
-          <BillPreview header={header} sections={sections} billDetails={billDetails} />
+          <BillPreview header={header} sections={sections} billDetails={billDetails} columnLabels={columnLabels} />
         </div>
 
         <div>
@@ -891,8 +983,11 @@ export function App() {
                   showDate: bill.showDate !== false,
                   showClientDetails: bill.showClientDetails !== false,
                   showClientAddress: bill.showClientAddress !== false,
-                  showGST: bill.showGST !== false
+                  showGST: bill.showGST !== false,
+                  showAdvance: bill.showAdvance !== false,
+                  showBalance: bill.showBalance !== false
                 });
+                setColumnLabels({ ...defaultColumnLabels, ...((bill as any).columnLabels ?? {}) });
                 setDbPanelOpen(false);
               }}
             />

@@ -16,8 +16,21 @@ import {
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
-import type { BillTable, HeaderTemplate, BillDetails } from "../types";
+import type { BillTable, HeaderTemplate, BillDetails, ColumnLabels } from "../types";
+import { defaultColumnLabels } from "../types";
 import { TINOS_REGULAR_BASE64, TINOS_BOLD_BASE64 } from "./tinosFont";
+import { convertAllPointValues } from "./inchConversion";
+
+// Format a date string (YYYY-MM-DD or any parseable) as DD/MM/YYYY for display.
+function formatDateForExport(dateStr: string): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
 
 // Register the embedded Tinos TTF (a Times-metric-compatible serif that includes
 // the Indian Rupee glyph U+20B9) under the "times" family name. jsPDF's built-in
@@ -509,7 +522,8 @@ export async function exportProfessionalPDF(
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
-  options?: { fitToOnePage?: boolean }
+  options?: { fitToOnePage?: boolean; embed?: string },
+  columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
   const doc = new jsPDF();
   registerRupeeFont(doc);
@@ -593,7 +607,7 @@ export async function exportProfessionalPDF(
   if (billDetails.showDate !== false) {
     yPos += 5;
     doc.setFontSize(11);
-    doc.text(`Date: ${billDetails.date}`, pageWidth - margin, yPos, { align: "right" });
+    doc.text(`Date: ${formatDateForExport(billDetails.date)}`, pageWidth - margin, yPos, { align: "right" });
     yPos += 10;
   }
 
@@ -635,24 +649,33 @@ export async function exportProfessionalPDF(
     return texts.reduce((w, t) => Math.max(w, doc.getTextWidth(t || "")), 0);
   };
   const allRowsForWidth = tables.flatMap(t => t.rows);
-  const srTexts = ["Sr. No", ...allRowsForWidth.map((r, i) => String(r.cells.sr || i + 1))];
-  const qtyTexts = ["Quantity", ...allRowsForWidth.map(r => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; })];
-  const rateTexts = ["Rate", ...allRowsForWidth.map(r => { const v = parseFloat(r.cells.rate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; })];
+  // A long custom header (e.g. "Materials with labour Charges") should WRAP inside
+  // its column rather than stretch the column, so cap its width contribution.
+  const HEADER_CAP = 34;
+  const headerW = (label: string) => Math.min(measureMax([label], "bold", 11), HEADER_CAP);
+  const dataMax = (texts: string[]) => measureMax(texts, "normal", 11);
+
+  const srData = allRowsForWidth.map((r, i) => String(r.cells.sr || i + 1));
+  const qtyData = allRowsForWidth.map(r => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; });
+  const rateData = allRowsForWidth.map(r => { const v = parseFloat(r.cells.rate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; });
   // Include each table's subtotal (with the ₹ symbol) so the Amount column is
-  // wide enough for the in-table Total row — the subtotal is usually the largest
-  // number, and it now shows the ₹ symbol too.
+  // wide enough for the in-table Total row.
   const tableSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.amount) || 0), 0));
-  const amtTexts = [
-    "Amount",
+  const amtData = [
     ...allRowsForWidth.map(r => { const v = parseFloat(r.cells.amount) || 0; return v > 0 ? pdfCurrency(v) : "\u2014"; }),
     ...tableSubtotals.map(s => pdfCurrency(s))
   ];
-  const sizeTexts = ["Size", ...allRowsForWidth.map(r => { const s = (r.cells.size || "").trim(); return s.toUpperCase() === "LS" ? "" : s; })];
+  const sizeData = tables.flatMap(t => t.rows.map(r => {
+    const s = (r.cells.size || "").trim();
+    if (s.toUpperCase() === "LS") return "";
+    const applyInch = (t.mode ?? "template") !== "manual";
+    return applyInch ? convertAllPointValues(s) : s;
+  }));
   const PAD = 5;
-  let srW = Math.min(Math.max(measureMax(srTexts, "bold", 11) + PAD, 12), 24);
-  let qtyW = Math.max(measureMax(qtyTexts, "bold", 11) + PAD, 16);
-  let rateW = Math.max(measureMax(rateTexts, "bold", 11) + PAD, 14);
-  let amtW = Math.max(measureMax(amtTexts, "bold", 11) + PAD, 22);
+  let srW = Math.min(Math.max(Math.max(headerW(columns.sr), dataMax(srData)) + PAD, 12), 24);
+  let qtyW = Math.max(Math.max(headerW(columns.quantity), dataMax(qtyData)) + PAD, 16);
+  let rateW = Math.max(Math.max(headerW(columns.rate), dataMax(rateData)) + PAD, 14);
+  let amtW = Math.max(Math.max(headerW(columns.amount), dataMax(amtData)) + PAD, 22);
   // Guarantee Size + Particulars always keep a usable share of the width. If the
   // numeric columns would be too greedy (very large numbers), scale them down —
   // their cells wrap, so the values still show in full over multiple lines.
@@ -665,7 +688,7 @@ export async function exportProfessionalPDF(
   }
   const remainingForSizeAndParticulars = contentWidth - (srW + qtyW + rateW + amtW);
   const PARTICULARS_MIN = 38;
-  const sizePreferred = measureMax(sizeTexts, "normal", 11) + PAD;
+  const sizePreferred = Math.max(headerW(columns.size), dataMax(sizeData)) + PAD;
   // Give Size what it needs, but never so much that Particulars drops below its
   // minimum; clamp within the space that's actually available.
   let sizeW = Math.min(sizePreferred, remainingForSizeAndParticulars - PARTICULARS_MIN);
@@ -708,20 +731,33 @@ export async function exportProfessionalPDF(
   // Draws a shaded, bordered column-header row starting at the current yPos.
   // Returns the y-coordinate at the top of the header (for vertical line drawing).
   const drawTableHeader = (scale: number = 1): number => {
-    const hH = headerHeight * scale;
+    doc.setFont("times", "bold");
+    doc.setFontSize(11 * scale);
+    // Wrap each (possibly renamed) header label within its column; the header row
+    // grows taller if any label needs more than one line.
+    const labels = [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
+    const labelLines = colWidths.map((w, i) => doc.splitTextToSize(labels[i] || "", Math.max(w - 3, 6)));
+    const maxLines = Math.max(1, ...labelLines.map(l => l.length));
+    const hLineSpacing = 11 * scale * 0.42;
+    const hH = Math.max(headerHeight * scale, (maxLines - 1) * hLineSpacing + 11 * scale * 0.25 + 3.2 * scale);
+
     const yTopHeader = yPos - 4 * scale;
     doc.setFillColor(245, 245, 245);
     doc.rect(margin, yTopHeader, pageWidth - 2 * margin, hH, "F");
-    doc.setFont("times", "bold");
-    doc.setFontSize(11 * scale);
 
-    const yBaseHeader = yTopHeader + hH / 2 + 11 * scale * 0.125;
-    doc.text("Sr. No", margin + colWidths[0] / 2, yBaseHeader, { align: "center" });
-    doc.text("Particulars", margin + colWidths[0] + 2, yBaseHeader, { align: "left" });
-    doc.text("Size", margin + colWidths[0] + colWidths[1] + colWidths[2] / 2, yBaseHeader, { align: "center" });
-    doc.text("Quantity", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2, yBaseHeader, { align: "center" });
-    doc.text("Rate", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2, yBaseHeader, { align: "center" });
-    doc.text("Amount", margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2, yBaseHeader, { align: "center" });
+    const centers = [
+      margin + colWidths[0] / 2,
+      margin + colWidths[0] + 2, // Particulars = left aligned
+      margin + colWidths[0] + colWidths[1] + colWidths[2] / 2,
+      margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2,
+      margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2,
+      margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2
+    ];
+    labelLines.forEach((lines, i) => {
+      const n = lines.length;
+      const yBase = yTopHeader + hH / 2 - ((n - 1) * hLineSpacing) / 2 + (11 * scale * 0.25) / 2;
+      doc.text(lines, centers[i], yBase, { align: i === 1 ? "left" : "center" });
+    });
 
     doc.setDrawColor(0);
     doc.setLineWidth(0.2);
@@ -773,8 +809,11 @@ export async function exportProfessionalPDF(
       // Every other cell wraps too, so no value is ever clipped. Measured at 11pt.
       doc.setFont("times", "normal");
       doc.setFontSize(nfs);
-      const sizeStr = row.cells.size || "";
-      const isLSRow = sizeStr.trim().toUpperCase() === "LS";
+      const sizeRaw = row.cells.size || "";
+      const isLSRow = sizeRaw.trim().toUpperCase() === "LS";
+      // Apply inch conversion when the table is in template mode (default).
+      const applyInch = (table.mode ?? "template") !== "manual";
+      const sizeStr = (!isLSRow && applyInch && sizeRaw) ? convertAllPointValues(sizeRaw) : sizeRaw;
       const quantity = parseFloat(row.cells.quantity) || 0;
       const rate = parseFloat(row.cells.rate) || 0;
       const amount = parseFloat(row.cells.amount) || 0;
@@ -970,11 +1009,13 @@ export async function exportProfessionalPDF(
       const capHeight = fontSize * 0.25;
       const textHeight = (lines.length - 1) * lineSpacing + capHeight;
       // Account for wrapped Size lines too.
-      const sizeStr = row.cells.size || "";
-      const isLSRow = sizeStr.trim().toUpperCase() === "LS";
+      const sizeRawM = row.cells.size || "";
+      const isLSRowM = sizeRawM.trim().toUpperCase() === "LS";
+      const applyInchM = (table.mode ?? "template") !== "manual";
+      const sizeStrM = (!isLSRowM && applyInchM && sizeRawM) ? convertAllPointValues(sizeRawM) : sizeRawM;
       doc.setFont("times", "normal");
       doc.setFontSize(11);
-      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, colWidths[2] - 3) : [];
+      const sizeLines = sizeStrM && !isLSRowM ? doc.splitTextToSize(sizeStrM, colWidths[2] - 3) : [];
       const sizeTextHeight = sizeLines.length > 0 ? (sizeLines.length - 1) * (11 * 0.405) + 11 * 0.25 : 0;
       rowsH += Math.max(Math.max(textHeight, sizeTextHeight) + 2.5, minRowHeight);
     });
@@ -1038,31 +1079,28 @@ export async function exportProfessionalPDF(
   const labelX = boxX;
   const valX = boxX + 45;
   
-  // Row 1: Total
-  doc.setFont("times", "bold");
-  doc.setFontSize(9);
-  doc.text(multipleTables ? "Grand Total" : "Total", labelX, boxY + rowHeight * 0.7);
-  doc.text(pdfCurrency(total), valX, boxY + rowHeight * 0.7, { align: "right" });
-  
-  // Row 2: Advance
-  doc.setFont("times", "normal");
-  doc.setFontSize(9);
-  doc.text("Advance", labelX, boxY + rowHeight + rowHeight * 0.7);
-  doc.text(pdfCurrency(billDetails.advance), valX, boxY + rowHeight + rowHeight * 0.7, { align: "right" });
-  
-  // Divider line before Balance row
-  doc.setLineWidth(0.15);
-  doc.line(labelX, boxY + rowHeight * 2, valX, boxY + rowHeight * 2);
-  
-  // Row 3: Balance
-  doc.setFont("times", "bold");
-  doc.setFontSize(9);
-  doc.text("Balance", labelX, boxY + rowHeight * 2 + rowHeight * 0.7);
-  doc.text(pdfCurrency(balance), valX, boxY + rowHeight * 2 + rowHeight * 0.7, { align: "right" });
-  
+  // Total is always shown; Advance and Balance are optional.
+  const showAdvance = billDetails.showAdvance !== false;
+  const showBalance = billDetails.showBalance !== false;
+  const showGrandTotal = billDetails.showGrandTotal !== false;
+  const summaryEntries: { label: string; value: number; bold: boolean; divider: boolean }[] = [];
+  if (showGrandTotal) summaryEntries.push({ label: multipleTables ? "Grand Total:" : "Total:", value: total, bold: true, divider: false });
+  if (showAdvance) summaryEntries.push({ label: "Advance:", value: billDetails.advance, bold: false, divider: false });
+  if (showBalance) summaryEntries.push({ label: "Balance:", value: balance, bold: true, divider: showAdvance });
+
+  summaryEntries.forEach((e, i) => {
+    const y = boxY + rowHeight * i + rowHeight * 0.7;
+    if (e.divider) {
+      doc.setLineWidth(0.15);
+      doc.line(labelX, boxY + rowHeight * i, valX, boxY + rowHeight * i);
+    }
+    doc.setFont("times", e.bold ? "bold" : "normal");
+    doc.setFontSize(9);
+    doc.text(e.label, labelX, y);
+    doc.text(pdfCurrency(e.value), valX, y, { align: "right" });
+  });
   doc.setLineWidth(0.2);
-  
-  yPos = boxY + rowHeight * 3 + 8;
+  yPos = boxY + rowHeight * summaryEntries.length + 8;
 
   // Note
   if (billDetails.showNote && billDetails.note) {
@@ -1083,14 +1121,23 @@ export async function exportProfessionalPDF(
     doc.text("Authorised Signatory", pageWidth - margin - 60, yPos, { align: "center" });
   }
 
-  doc.save(`${filename}.pdf`);
+  // If editable bill data was provided, append it after the PDF so the file can
+  // be re-uploaded and edited in-app. Otherwise save normally.
+  if (options?.embed) {
+    const pdfBytes = doc.output("arraybuffer");
+    const blob = new Blob([pdfBytes, options.embed], { type: "application/pdf" });
+    saveAs(blob, `${filename}.pdf`);
+  } else {
+    doc.save(`${filename}.pdf`);
+  }
 }
 
 export async function exportProfessionalExcel(
   header: HeaderTemplate,
   tables: BillTable[],
   billDetails: BillDetails,
-  filename: string = "bill"
+  filename: string = "bill",
+  columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
   const tableTotal = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
   const total = tables.reduce((sum, t) => sum + tableTotal(t), 0);
@@ -1141,7 +1188,7 @@ export async function exportProfessionalExcel(
   }
 
   if (billDetails.showDate !== false) {
-    addBanner(`Date: ${billDetails.date}`, { align: "right" });
+    addBanner(`Date: ${formatDateForExport(billDetails.date)}`, { align: "right" });
   }
 
   if (billDetails.showClientDetails !== false) {
@@ -1165,7 +1212,7 @@ export async function exportProfessionalExcel(
     }
 
     // Column header row
-    const hr = ws.addRow(["Sr. No", "Particulars", "Size", "Quantity", "Rate", "Amount"]);
+    const hr = ws.addRow([columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount]);
     hr.eachCell(c => {
       c.font = { bold: true };
       c.fill = headerFill;
@@ -1179,12 +1226,14 @@ export async function exportProfessionalExcel(
       const qty = parseFloat(row.cells.quantity) || 0;
       const rate = parseFloat(row.cells.rate) || 0;
       const isLS = (row.cells.size || "").trim().toUpperCase() === "LS";
+      const qtyRounded = Math.round(qty * 100) / 100;
+      const rateRounded = Math.round(rate * 100) / 100;
       const dr = ws.addRow([
         row.cells.sr || String(index + 1),
         row.cells.particulars || "",
         isLS ? "LS" : (row.cells.size || ""),
-        isLS ? "" : (qty > 0 ? qty : ""),
-        isLS ? "" : (rate > 0 ? rate : ""),
+        isLS ? "" : (qty > 0 ? qtyRounded : ""),
+        isLS ? "" : (rate > 0 ? rateRounded : ""),
         amtVal > 0 ? `${formatIndianNumber(amtVal)}/-` : ""
       ]);
       dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
@@ -1207,11 +1256,13 @@ export async function exportProfessionalExcel(
     addSpacer();
   });
 
-  // Grand totals
-  const grand = ws.addRow(["", "", "", "", multipleTables ? "Grand Total" : "Total", `${formatIndianNumber(total)}/-`]);
-  const adv = ws.addRow(["", "", "", "", "Advance", `${formatIndianNumber(billDetails.advance)}/-`]);
-  const bal = ws.addRow(["", "", "", "", "Balance", `${formatIndianNumber(balance)}/-`]);
-  [grand, adv, bal].forEach(r => {
+  // Grand totals (Total always; Advance/Balance optional)
+  const summaryLines: [string, string][] = [];
+  if (billDetails.showGrandTotal !== false) summaryLines.push([multipleTables ? "Grand Total:" : "Total:", `${formatIndianNumber(total)}/-`]);
+  if (billDetails.showAdvance !== false) summaryLines.push(["Advance:", `${formatIndianNumber(billDetails.advance)}/-`]);
+  if (billDetails.showBalance !== false) summaryLines.push(["Balance:", `${formatIndianNumber(balance)}/-`]);
+  summaryLines.forEach(([label, value]) => {
+    const r = ws.addRow(["", "", "", "", label, value]);
     r.getCell(5).font = { bold: true };
     r.getCell(6).font = { bold: true };
     r.getCell(6).alignment = { horizontal: "center" };
@@ -1244,7 +1295,8 @@ export async function exportProfessionalWord(
   header: HeaderTemplate,
   tables: BillTable[],
   billDetails: BillDetails,
-  filename: string = "bill"
+  filename: string = "bill",
+  columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
   const tableTotalW = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
   const total = tables.reduce((sum, t) => sum + tableTotalW(t), 0);
@@ -1332,7 +1384,7 @@ export async function exportProfessionalWord(
   if (billDetails.showDate !== false) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Date: ${billDetails.date}`, size: 22 })],
+        children: [new TextRun({ text: `Date: ${formatDateForExport(billDetails.date)}`, size: 22 })],
         alignment: AlignmentType.RIGHT,
         spacing: { before: 200 }
       })
@@ -1360,12 +1412,12 @@ export async function exportProfessionalWord(
   const buildHeaderRow = () =>
     new TableRow({
       children: [
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Sr. No", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Particulars", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Size", bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Quantity", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Rate", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.rate, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.amount, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
       ]
     });
 
@@ -1427,8 +1479,8 @@ export async function exportProfessionalWord(
           ]
         : [
             new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
-            new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? String(qtyVal) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? formatIndianNumber(rateVal) : "—", alignment: AlignmentType.CENTER })] })
+            new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? pdfNumber(qtyVal) : "—", alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? pdfNumber(rateVal) : "—", alignment: AlignmentType.CENTER })] })
           ];
 
       tableRows.push(new TableRow({ children: [srCell, particularsCell, ...middleCells, amountCell] }));
@@ -1452,27 +1504,29 @@ export async function exportProfessionalWord(
     children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
   });
 
-  // Grand totals summary (Grand Total / Advance / Balance)
+  // Grand totals summary (Grand Total / Advance / Balance). Uses explicit column
+  // widths so the label (e.g. "Grand Total") and the ₹ value never wrap.
+  const SUMMARY_SPACER = 4600;
+  const SUMMARY_LABEL = 2300;
+  const SUMMARY_VALUE = 2100;
   const summaryRow = (label: string, value: string) =>
     new TableRow({
       children: [
-        new TableCell({ children: [new Paragraph({ text: "" })] }),
-        new TableCell({ children: [new Paragraph({ text: "" })] }),
-        new TableCell({ children: [new Paragraph({ text: "" })] }),
-        new TableCell({ children: [new Paragraph({ text: "" })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: label, bold: true })], alignment: AlignmentType.RIGHT })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: value, bold: true })], alignment: AlignmentType.RIGHT })] })
+        new TableCell({ children: [new Paragraph({ text: "" })], width: { size: SUMMARY_SPACER, type: WidthType.DXA } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: label, bold: true })], alignment: AlignmentType.RIGHT })], width: { size: SUMMARY_LABEL, type: WidthType.DXA } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: value, bold: true })], alignment: AlignmentType.RIGHT })], width: { size: SUMMARY_VALUE, type: WidthType.DXA } })
       ]
     });
 
+  const summaryRows: TableRow[] = [];
+  if (billDetails.showGrandTotal !== false) summaryRows.push(summaryRow(multipleTables ? "Grand Total:" : "Total:", formatIndianCurrency(total)));
+  if (billDetails.showAdvance !== false) summaryRows.push(summaryRow("Advance:", formatIndianCurrency(billDetails.advance)));
+  if (billDetails.showBalance !== false) summaryRows.push(summaryRow("Balance:", formatIndianCurrency(balance)));
   children.push(
     new Table({
-      rows: [
-        summaryRow(multipleTables ? "Grand Total" : "Total", formatIndianCurrency(total)),
-        summaryRow("Advance", formatIndianCurrency(billDetails.advance)),
-        summaryRow("Balance", formatIndianCurrency(balance))
-      ],
-      width: { size: 100, type: WidthType.PERCENTAGE }
+      rows: summaryRows,
+      columnWidths: [SUMMARY_SPACER, SUMMARY_LABEL, SUMMARY_VALUE],
+      width: { size: SUMMARY_SPACER + SUMMARY_LABEL + SUMMARY_VALUE, type: WidthType.DXA }
     })
   );
 
