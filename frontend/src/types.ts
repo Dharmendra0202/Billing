@@ -85,6 +85,11 @@ export type EditorRow = {
   quantity: number;
   rate: number;
   amount: number;
+  // Labour + Material format fields (default 0 when unused)
+  labourRate?: number;
+  labourAmount?: number;
+  materialRate?: number;
+  materialAmount?: number;
   bold?: boolean;
   fontSize?: number;
   align?: "left" | "center" | "right";

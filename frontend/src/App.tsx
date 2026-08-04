@@ -31,31 +31,45 @@ function sectionToBillTable(section: BillSection): BillTable {
     rows: section.rows.map(r => ({
       id: r.id,
       cells: {
-        sr:          String(r.sr),
-        particulars: r.particulars,
-        size:        r.size,
-        quantity:    String(r.quantity),
-        rate:        String(r.rate),
-        amount:      String(r.amount),
-        bold:        String(r.bold || false),
-        fontSize:    String(r.fontSize || 11),
-        align:       r.align || "left"
+        sr:              String(r.sr),
+        particulars:     r.particulars,
+        size:            r.size,
+        quantity:        String(r.quantity),
+        rate:            String(r.rate),
+        amount:          String(r.amount),
+        labourRate:      String(r.labourRate || 0),
+        labourAmount:    String(r.labourAmount || 0),
+        materialRate:    String(r.materialRate || 0),
+        materialAmount:  String(r.materialAmount || 0),
+        bold:            String(r.bold || false),
+        fontSize:        String(r.fontSize || 11),
+        align:           r.align || "left"
       }
     }))
   };
 }
 
-function recalc(rows: EditorRow[]): EditorRow[] {
+function recalc(rows: EditorRow[], format: BillFormat = "standard"): EditorRow[] {
   return rows.map((r, i) => {
     const amt = Math.round(r.quantity * r.rate * 100) / 100;
-    return { ...r, sr: i + 1, amount: amt };
+    const labourAmt = Math.round(r.quantity * (r.labourRate || 0) * 100) / 100;
+    const materialAmt = Math.round(r.quantity * (r.materialRate || 0) * 100) / 100;
+    return {
+      ...r,
+      sr: i + 1,
+      amount: format === "labourMaterial" ? labourAmt : amt,
+      labourAmount: labourAmt,
+      materialAmount: materialAmt
+    };
   });
 }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
 const makeRow = (): EditorRow => ({
-  id: uid(), sr: 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0, bold: false, fontSize: 11, align: "left"
+  id: uid(), sr: 1, particulars: "", size: "", quantity: 1, rate: 0, amount: 0,
+  labourRate: 0, labourAmount: 0, materialRate: 0, materialAmount: 0,
+  bold: false, fontSize: 11, align: "left"
 });
 
 const defaultSections = (): BillSection[] => [
@@ -83,20 +97,18 @@ function loadInitialSections(): BillSection[] {
 
 type SelectedCell = { sectionId: string; rowId: string } | null;
 
+export type BillFormat = "standard" | "labourMaterial";
+
 export function App() {
-  const [header, setHeader] = useState<HeaderTemplate>(() => {
-    const saved = localStorage.getItem("bill.header");
-    return saved ? JSON.parse(saved) : initialHeader;
-  });
+  const [header, setHeader] = useState<HeaderTemplate>(initialHeader);
 
-  const [billDetails, setBillDetails] = useState<BillDetails>(() => {
-    const saved = localStorage.getItem("bill.details");
-    return saved ? JSON.parse(saved) : initialBillDetails;
-  });
+  const [billDetails, setBillDetails] = useState<BillDetails>(initialBillDetails);
 
-  const [sections, setSections] = useState<BillSection[]>(loadInitialSections);
+  const [billFormat, setBillFormat] = useState<BillFormat>("standard");
 
-  const [billTitle, setBillTitle] = useState(() => localStorage.getItem("bill.title") || "New Bill");
+  const [sections, setSections] = useState<BillSection[]>(defaultSections);
+
+  const [billTitle, setBillTitle] = useState("New Bill");
   const [leftTab, setLeftTab] = useState<"details" | "scanner">("details");
   const [dbPanelOpen, setDbPanelOpen] = useState(false);
   const [leftWidth, setLeftWidth] = useState(320);
@@ -114,33 +126,11 @@ export function App() {
   // ── Autosave ────────────────────────────────────────────────────────────────
   // Persist every change immediately so a page refresh (or accidental reload)
   // never loses the work in progress. Restored automatically on next load.
-  useEffect(() => {
-    localStorage.setItem("bill.header", JSON.stringify(header));
-  }, [header]);
-
-  useEffect(() => {
-    localStorage.setItem("bill.details", JSON.stringify(billDetails));
-  }, [billDetails]);
-
-  useEffect(() => {
-    localStorage.setItem("bill.sections", JSON.stringify(sections));
-    // Drop the legacy single-table key so it can't shadow the new format.
-    localStorage.removeItem("bill.rows");
-  }, [sections]);
-
-  useEffect(() => {
-    localStorage.setItem("bill.title", billTitle);
-  }, [billTitle]);
-
-  useEffect(() => {
-    localStorage.setItem("bill.columns", JSON.stringify(columnLabels));
-  }, [columnLabels]);
-
   const updateColumnLabel = (key: keyof ColumnLabels, value: string) => {
     setColumnLabels(prev => ({ ...prev, [key]: value }));
   };
 
-  // Visual autosave status for the header pill ("Saving…" briefly, then "Saved").
+  // Visual feedback only (no persistent autosave — app always starts fresh).
   const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
   useEffect(() => {
     setSaveState("saving");
@@ -193,10 +183,21 @@ export function App() {
   };
 
   // ── Derived totals ────────────────────────────────────────────────────────
-  const sectionTotal = (section: BillSection) => section.rows.reduce((s, r) => s + r.amount, 0);
+  const sectionTotal = (section: BillSection) => {
+    if (billFormat === "labourMaterial") {
+      return section.rows.reduce((s, r) => s + (r.materialAmount || 0), 0);
+    }
+    return section.rows.reduce((s, r) => s + r.amount, 0);
+  };
+  const sectionLabourTotal = (section: BillSection) => section.rows.reduce((s, r) => s + (r.labourAmount || 0), 0);
   const total = useMemo(
-    () => sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0),
-    [sections]
+    () => {
+      if (billFormat === "labourMaterial") {
+        return sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + (r.materialAmount || 0), 0), 0);
+      }
+      return sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0);
+    },
+    [sections, billFormat]
   );
   const balance = total - billDetails.advance;
   const totalItems = useMemo(() => sections.reduce((n, s) => n + s.rows.length, 0), [sections]);
@@ -253,7 +254,8 @@ export function App() {
         s.rows.map(r => ({
           ...r,
           quantity: r.size.trim() ? parseSize(r.size, applyInch) : r.quantity
-        }))
+        })),
+        billFormat
       );
       return { ...s, mode: nextMode, rows };
     }));
@@ -279,22 +281,22 @@ export function App() {
   };
 
   const addRow = (sectionId: string) => {
-    updateSectionRows(sectionId, rows => recalc([...rows, makeRow()]));
+    updateSectionRows(sectionId, rows => recalc([...rows, makeRow()], billFormat));
   };
 
   // Insert a fresh row immediately below the given row (in-between insert).
   const insertRowBelow = (sectionId: string, rowId: string) => {
     updateSectionRows(sectionId, rows => {
       const index = rows.findIndex(r => r.id === rowId);
-      if (index === -1) return recalc([...rows, makeRow()]);
+      if (index === -1) return recalc([...rows, makeRow()], billFormat);
       const next = [...rows];
       next.splice(index + 1, 0, makeRow());
-      return recalc(next);
+      return recalc(next, billFormat);
     });
   };
 
   const deleteRow = (sectionId: string, rowId: string) => {
-    updateSectionRows(sectionId, rows => recalc(rows.filter(r => r.id !== rowId)));
+    updateSectionRows(sectionId, rows => recalc(rows.filter(r => r.id !== rowId), billFormat));
     setSelectedCell(prev => (prev?.rowId === rowId ? null : prev));
   };
 
@@ -310,7 +312,7 @@ export function App() {
         return next;
       });
       if (field === "amount") return updated.map((r, i) => ({ ...r, sr: i + 1 }));
-      return recalc(updated);
+      return recalc(updated, billFormat);
     });
   };
 
@@ -368,7 +370,7 @@ export function App() {
     if (format === "pdf") {
       // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
       const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels });
-      await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed }, columnLabels);
+      await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat }, columnLabels);
     }
     else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels);
     else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels);
@@ -416,6 +418,15 @@ export function App() {
             onChange={e => setBillTitle(e.target.value)}
             placeholder="Bill title..."
           />
+          <select
+            className="formatSelect"
+            value={billFormat}
+            onChange={e => setBillFormat(e.target.value as BillFormat)}
+            title="Switch bill format"
+          >
+            <option value="standard">Standard (Rate × Qty)</option>
+            <option value="labourMaterial">Labour + Material</option>
+          </select>
         </div>
         <div className="topHeaderActions">
           <span className={`saveStatus ${saveState}`} title="Your work is auto-saved in this browser on every change">
@@ -722,15 +733,26 @@ export function App() {
             </div>
 
             <div className="tableWrap">
-              <table className="billTable">
+              <table className={`billTable ${billFormat === "labourMaterial" ? "labourMaterialTable" : ""}`}>
                 <thead>
                   <tr>
                     <th style={{ width: 44 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.sr} onChange={e => updateColumnLabel("sr", e.target.value)} title="Click to rename this column" /></th>
                     <th><input className="colHeaderInput" value={columnLabels.particulars} onChange={e => updateColumnLabel("particulars", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: 120 }}><input className="colHeaderInput" value={columnLabels.size} onChange={e => updateColumnLabel("size", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.rate} onChange={e => updateColumnLabel("rate", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: 110 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.amount} onChange={e => updateColumnLabel("amount", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: billFormat === "labourMaterial" ? 90 : 120 }}><input className="colHeaderInput" value={columnLabels.size} onChange={e => updateColumnLabel("size", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: billFormat === "labourMaterial" ? 65 : 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>
+                    {billFormat === "standard" ? (
+                      <>
+                        <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.rate} onChange={e => updateColumnLabel("rate", e.target.value)} title="Click to rename this column" /></th>
+                        <th style={{ width: 110 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.amount} onChange={e => updateColumnLabel("amount", e.target.value)} title="Click to rename this column" /></th>
+                      </>
+                    ) : (
+                      <>
+                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 10 }}>Only Labour Charges</span></th>
+                        <th style={{ width: 70 }} className="thCenter"><span style={{ fontSize: 10 }}>Amount</span></th>
+                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 10 }}>Materials with Labour Charges</span></th>
+                        <th style={{ width: 70 }} className="thCenter"><span style={{ fontSize: 10 }}>Amount</span></th>
+                      </>
+                    )}
                     <th style={{ width: 60 }}></th>
                   </tr>
                 </thead>
@@ -793,30 +815,85 @@ export function App() {
                             onFocus={select}
                           />
                         </td>
-                        <td className="tdCenter">
-                          <input
-                            className="billCell"
-                            style={{ textAlign: "center" }}
-                            type="number"
-                            min={0}
-                            value={row.rate || ""}
-                            onChange={e => updateRow(section.id, row.id, "rate", parseFloat(e.target.value) || 0)}
-                            placeholder="0"
-                            onFocus={select}
-                          />
-                        </td>
-                        <td className="tdAmount">
-                          <input
-                            className="billCell"
-                            style={{ textAlign: "center", background: "transparent" }}
-                            type="number"
-                            min={0}
-                            value={row.amount || ""}
-                            onChange={e => updateRow(section.id, row.id, "amount", parseFloat(e.target.value) || 0)}
-                            placeholder="0"
-                            onFocus={select}
-                          />
-                        </td>
+                        {billFormat === "standard" ? (
+                          <>
+                            <td className="tdCenter">
+                              <input
+                                className="billCell"
+                                style={{ textAlign: "center" }}
+                                type="number"
+                                min={0}
+                                value={row.rate || ""}
+                                onChange={e => updateRow(section.id, row.id, "rate", parseFloat(e.target.value) || 0)}
+                                placeholder="0"
+                                onFocus={select}
+                              />
+                            </td>
+                            <td className="tdAmount">
+                              <input
+                                className="billCell"
+                                style={{ textAlign: "center", background: "transparent" }}
+                                type="number"
+                                min={0}
+                                value={row.amount || ""}
+                                onChange={e => updateRow(section.id, row.id, "amount", parseFloat(e.target.value) || 0)}
+                                placeholder="0"
+                                onFocus={select}
+                              />
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="tdCenter">
+                              <input
+                                className="billCell"
+                                style={{ textAlign: "center" }}
+                                type="number"
+                                min={0}
+                                value={row.labourRate || ""}
+                                onChange={e => updateRow(section.id, row.id, "labourRate", parseFloat(e.target.value) || 0)}
+                                placeholder="0"
+                                onFocus={select}
+                              />
+                            </td>
+                            <td className="tdAmount">
+                              <input
+                                className="billCell"
+                                style={{ textAlign: "center", background: "transparent" }}
+                                type="number"
+                                min={0}
+                                value={row.labourAmount || ""}
+                                readOnly
+                                tabIndex={-1}
+                                onFocus={select}
+                              />
+                            </td>
+                            <td className="tdCenter">
+                              <input
+                                className="billCell"
+                                style={{ textAlign: "center" }}
+                                type="number"
+                                min={0}
+                                value={row.materialRate || ""}
+                                onChange={e => updateRow(section.id, row.id, "materialRate", parseFloat(e.target.value) || 0)}
+                                placeholder="0"
+                                onFocus={select}
+                              />
+                            </td>
+                            <td className="tdAmount">
+                              <input
+                                className="billCell"
+                                style={{ textAlign: "center", background: "transparent" }}
+                                type="number"
+                                min={0}
+                                value={row.materialAmount || ""}
+                                readOnly
+                                tabIndex={-1}
+                                onFocus={select}
+                              />
+                            </td>
+                          </>
+                        )}
                         <td>
                           <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
                             <button
@@ -846,6 +923,12 @@ export function App() {
                   <span className="summaryLabel">{section.title ? `${section.title} total:` : "Table total:"}</span>
                   <span className="summaryValue">{money(sectionTotal(section))}</span>
                 </div>
+                {billFormat === "labourMaterial" && (
+                  <div className="sectionTotalLine" style={{ marginTop: 2 }}>
+                    <span className="summaryLabel">Labour total:</span>
+                    <span className="summaryValue">{money(sectionLabourTotal(section))}</span>
+                  </div>
+                )}
               </div>
               <div className="tableFooterRight">
                 <button className="addRowBtn" onClick={() => addRow(section.id)}>

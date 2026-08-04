@@ -522,7 +522,7 @@ export async function exportProfessionalPDF(
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
-  options?: { fitToOnePage?: boolean; embed?: string },
+  options?: { fitToOnePage?: boolean; embed?: string; format?: "standard" | "labourMaterial" },
   columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
   const doc = new jsPDF();
@@ -532,7 +532,12 @@ export async function exportProfessionalPDF(
   let yPos = 10;
 
   // Calculate grand total across all tables
-  const tableTotal = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
+  const isLabourFormat = options?.format === "labourMaterial";
+  const tableTotal = (t: BillTable) => {
+    if (isLabourFormat) return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.materialAmount) || 0), 0);
+    return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
+  };
+  const tableLabourTotal = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.labourAmount) || 0), 0);
   const total = tables.reduce((sum, t) => sum + tableTotal(t), 0);
   const balance = total - billDetails.advance;
 
@@ -717,11 +722,42 @@ export async function exportProfessionalPDF(
   ];
 
   // Horizontal centres of each column (used when drawing wrapped cell text).
+  // For Labour + Material format we override colWidths/verticalX with 8 columns:
+  // Sr | Particulars | Size | Quantity | Only Labour | Amount | Materials w/ Labour | Amount
+  let labourCenterX = 0, labourAmtCenterX = 0, materialCenterX = 0, materialAmtCenterX = 0;
+  if (isLabourFormat) {
+    // Fixed proportional widths for the 8-column layout.
+    const cw = contentWidth;
+    const srWL = 12; const partWL = cw * 0.22; const sizeWL = cw * 0.12; const qtyWL = cw * 0.09;
+    const labourWL = cw * 0.11; const labourAmtWL = cw * 0.13; const matWL = cw * 0.11; const matAmtWL = cw - srWL - partWL - sizeWL - qtyWL - labourWL - labourAmtWL - matWL;
+    (colWidths as any).length = 0;
+    [srWL, partWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].forEach(w => (colWidths as any).push(w));
+    // Rebuild colX and verticalX for 8 columns
+    (colX as any).length = 0;
+    let cumX = margin + 2;
+    for (let i = 0; i < colWidths.length; i++) { (colX as any).push(cumX); cumX += colWidths[i]; }
+    (verticalX as any).length = 0;
+    let vx = margin;
+    for (let i = 0; i < colWidths.length; i++) { (verticalX as any).push(vx); vx += colWidths[i]; }
+    (verticalX as any).push(pageWidth - margin);
+  }
+
   const srCenterX = margin + colWidths[0] / 2;
-  const sizeCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] / 2;
-  const qtyCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2;
-  const rateCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2;
-  const amtCenterX = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2;
+  const sizeCenterX = isLabourFormat
+    ? margin + colWidths[0] + colWidths[1] + colWidths[2] / 2
+    : margin + colWidths[0] + colWidths[1] + colWidths[2] / 2;
+  const qtyCenterX = isLabourFormat
+    ? margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2
+    : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2;
+  if (isLabourFormat) {
+    const base = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3];
+    labourCenterX = base + colWidths[4] / 2;
+    labourAmtCenterX = base + colWidths[4] + colWidths[5] / 2;
+    materialCenterX = base + colWidths[4] + colWidths[5] + colWidths[6] / 2;
+    materialAmtCenterX = base + colWidths[4] + colWidths[5] + colWidths[6] + colWidths[7] / 2;
+  }
+  const rateCenterX = isLabourFormat ? 0 : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2;
+  const amtCenterX = isLabourFormat ? 0 : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2;
 
   const headerHeight = 6.5;
   const minRowHeight = 6;
@@ -733,9 +769,12 @@ export async function exportProfessionalPDF(
   const drawTableHeader = (scale: number = 1): number => {
     doc.setFont("times", "bold");
     doc.setFontSize(11 * scale);
-    // Wrap each (possibly renamed) header label within its column; the header row
-    // grows taller if any label needs more than one line.
-    const labels = [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
+
+    // Build the label list and centres depending on the format.
+    const labels = isLabourFormat
+      ? [columns.sr, columns.particulars, columns.size, columns.quantity, "Only Labour Charges", "Amount", "Materials with labour Charges", "Amount"]
+      : [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
+
     const labelLines = colWidths.map((w, i) => doc.splitTextToSize(labels[i] || "", Math.max(w - 3, 6)));
     const maxLines = Math.max(1, ...labelLines.map(l => l.length));
     const hLineSpacing = 11 * scale * 0.42;
@@ -745,14 +784,11 @@ export async function exportProfessionalPDF(
     doc.setFillColor(245, 245, 245);
     doc.rect(margin, yTopHeader, pageWidth - 2 * margin, hH, "F");
 
-    const centers = [
-      margin + colWidths[0] / 2,
-      margin + colWidths[0] + 2, // Particulars = left aligned
-      margin + colWidths[0] + colWidths[1] + colWidths[2] / 2,
-      margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2,
-      margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2,
-      margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2
-    ];
+    // Compute centres per column (Particulars = left-aligned, rest = center).
+    let cx = margin;
+    const centers = colWidths.map((w) => { const c = cx + w / 2; cx += w; return c; });
+    centers[1] = margin + colWidths[0] + 2; // Particulars left-aligned
+
     labelLines.forEach((lines, i) => {
       const n = lines.length;
       const yBase = yTopHeader + hH / 2 - ((n - 1) * hLineSpacing) / 2 + (11 * scale * 0.25) / 2;
@@ -763,7 +799,6 @@ export async function exportProfessionalPDF(
     doc.setLineWidth(0.2);
     doc.line(margin, yTopHeader, pageWidth - margin, yTopHeader);
     doc.line(margin, yTopHeader + hH, pageWidth - margin, yTopHeader + hH);
-    // Header vertical separators (full set)
     verticalX.forEach(x => doc.line(x, yTopHeader, x, yTopHeader + hH));
 
     yPos = yTopHeader + hH;
@@ -774,8 +809,16 @@ export async function exportProfessionalPDF(
   // the Size/Quantity/Rate separators are omitted so those three columns read
   // as one merged cell.
   const drawRowVerticals = (top: number, bottom: number, merged: boolean) => {
-    const idxs = merged ? [0, 1, 2, 5, 6] : [0, 1, 2, 3, 4, 5, 6];
-    idxs.forEach(i => doc.line(verticalX[i], top, verticalX[i], bottom));
+    if (merged) {
+      // For LS rows, draw only the outer borders and the merge boundaries.
+      // Standard: keep 0,1,2 (Sr, Part) then skip Size/Qty/Rate, draw 5,6 (Amt).
+      // Labour: keep 0,1,2 then skip Size/Qty/Labour/LabourAmt/Mat, draw last 2 (MatAmt).
+      const lastTwo = [verticalX.length - 2, verticalX.length - 1];
+      const idxs = [0, 1, 2, ...lastTwo];
+      idxs.forEach(i => doc.line(verticalX[i], top, verticalX[i], bottom));
+    } else {
+      verticalX.forEach(x => doc.line(x, top, x, bottom));
+    }
   };
 
   // Render one section table. Returns its subtotal.
@@ -948,17 +991,34 @@ export async function exportProfessionalPDF(
       doc.setFont("times", "normal");
       doc.setFontSize(nfs);
       if (isLS) {
-        doc.text("LS", (verticalX[2] + verticalX[5]) / 2, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+        // Merge from Size through to the column before the last Amount.
+        const mergeStart = verticalX[2];
+        const mergeEnd = isLabourFormat ? verticalX[verticalX.length - 2] : verticalX[5];
+        doc.text("LS", (mergeStart + mergeEnd) / 2, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
       } else {
         const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
         doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
         doc.text(m.qtyLines, qtyCenterX, baselineFor(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
-        doc.text(m.rateLines, rateCenterX, baselineFor(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        if (isLabourFormat) {
+          // Labour rate + amount, Material rate + amount
+          const labourRate = parseFloat(m.row.cells.labourRate) || 0;
+          const labourAmt = parseFloat(m.row.cells.labourAmount) || 0;
+          const materialRate = parseFloat(m.row.cells.materialRate) || 0;
+          const materialAmt = parseFloat(m.row.cells.materialAmount) || 0;
+          doc.text(labourRate > 0 ? pdfNumber(labourRate) : "\u2014", labourCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+          doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+          doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+          doc.text(materialAmt > 0 ? pdfCurrency(materialAmt) : "\u2014", materialAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+        } else {
+          doc.text(m.rateLines, rateCenterX, baselineFor(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        }
       }
-      // Amount (always shown; wraps if ever needed).
-      doc.text(m.amtLines, amtCenterX, baselineFor(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
+      // Amount column (standard format only — labour format draws both amounts above).
+      if (!isLabourFormat) {
+        doc.text(m.amtLines, amtCenterX, baselineFor(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
+      }
 
-      subtotal += parseFloat(m.row.cells.amount) || 0;
+      subtotal += isLabourFormat ? (parseFloat(m.row.cells.materialAmount) || 0) : (parseFloat(m.row.cells.amount) || 0);
 
       yPos += rowHeight;
       // Draw horizontal grid line below the row
@@ -967,25 +1027,45 @@ export async function exportProfessionalPDF(
       drawRowVerticals(yTop, yPos, isLS);
     });
 
-    // In-table Total row: two boxes under the Rate and Amount columns only.
+    // In-table Total row(s).
     const totalRowH = minRowHeight * scale;
     if (!compressed && yPos + totalRowH > pageBottom) { doc.addPage(); yPos = 20; }
     const totalTop = yPos;
     const totalBot = yPos + totalRowH;
     doc.setDrawColor(0);
     doc.setLineWidth(0.2);
-    // Box borders: Rate column = verticalX[4]..[5], Amount column = verticalX[5]..[6]
-    doc.line(verticalX[4], totalTop, verticalX[6], totalTop);
-    doc.line(verticalX[4], totalBot, verticalX[6], totalBot);
-    doc.line(verticalX[4], totalTop, verticalX[4], totalBot);
-    doc.line(verticalX[5], totalTop, verticalX[5], totalBot);
-    doc.line(verticalX[6], totalTop, verticalX[6], totalBot);
-    // Box text ("Total" under Rate, summed amount with the ₹ symbol under Amount)
-    const yBaseTotal = totalTop + totalRowH / 2 + 1.25 * scale;
     doc.setFont("times", "bold");
     doc.setFontSize(10 * scale);
-    doc.text("Total", (verticalX[4] + verticalX[5]) / 2, yBaseTotal, { align: "center" });
-    doc.text(pdfCurrency(subtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
+    const yBaseTotal = totalTop + totalRowH / 2 + 1.25 * scale;
+
+    if (isLabourFormat) {
+      // Two "Total" boxes: one for Labour Amount, one for Material Amount.
+      const labourSubtotal = table.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0);
+      // Labour total boxes (col 4 = label "Total", col 5 = labour sum)
+      doc.line(verticalX[4], totalTop, verticalX[5 + 1], totalTop);
+      doc.line(verticalX[4], totalBot, verticalX[5 + 1], totalBot);
+      doc.line(verticalX[4], totalTop, verticalX[4], totalBot);
+      doc.line(verticalX[5], totalTop, verticalX[5], totalBot);
+      doc.line(verticalX[6], totalTop, verticalX[6], totalBot);
+      doc.text("Total", (verticalX[4] + verticalX[5]) / 2, yBaseTotal, { align: "center" });
+      doc.text(pdfNumber(labourSubtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
+      // Material total boxes (col 6 = label "Total", col 7 = material sum)
+      doc.line(verticalX[6], totalTop, verticalX[8], totalTop);
+      doc.line(verticalX[6], totalBot, verticalX[8], totalBot);
+      doc.line(verticalX[7], totalTop, verticalX[7], totalBot);
+      doc.line(verticalX[8], totalTop, verticalX[8], totalBot);
+      doc.text("Total", (verticalX[6] + verticalX[7]) / 2, yBaseTotal, { align: "center" });
+      doc.text(pdfCurrency(subtotal), (verticalX[7] + verticalX[8]) / 2, yBaseTotal, { align: "center" });
+    } else {
+      // Standard: "Total" under Rate, summed amount under Amount.
+      doc.line(verticalX[4], totalTop, verticalX[6], totalTop);
+      doc.line(verticalX[4], totalBot, verticalX[6], totalBot);
+      doc.line(verticalX[4], totalTop, verticalX[4], totalBot);
+      doc.line(verticalX[5], totalTop, verticalX[5], totalBot);
+      doc.line(verticalX[6], totalTop, verticalX[6], totalBot);
+      doc.text("Total", (verticalX[4] + verticalX[5]) / 2, yBaseTotal, { align: "center" });
+      doc.text(pdfCurrency(subtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
+    }
     yPos = totalBot;
 
     return subtotal;
