@@ -1,9 +1,10 @@
-import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator, CheckCircle2, Loader2, SeparatorHorizontal, FolderOpen } from "lucide-react";
+import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator, CheckCircle2, Loader2, SeparatorHorizontal, FolderOpen, PanelLeft } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
+import { BillTableEditor } from "./components/BillTableEditor";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader } from "./data/initialBill";
 import { money, parseSize, toTitleCase } from "./lib/billMath";
@@ -11,10 +12,46 @@ import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord 
 import { convertAllPointValues } from "./lib/inchConversion";
 import { encodeBillMarker, extractBillFromPdf } from "./lib/billFile";
 import { defaultColumnLabels } from "./types";
-import type { BillDetails, BillSection, BillTable, ColumnLabels, EditorRow, HeaderTemplate } from "./types";
+import type { BillDetails, BillSection, BillTable, ColumnLabels, EditorRow, HeaderTemplate, BillFormat, BillColumn, BillRow } from "./types";
 
-// Convert a single section's editor rows → BillTable for export (all 6 columns)
-function sectionToBillTable(section: BillSection): BillTable {
+// Convert a single section's editor rows → BillTable for export
+function sectionToBillTable(section: BillSection, format: BillFormat = "standard"): BillTable {
+  if (format === "custom") {
+    const columns: BillColumn[] = section.columns && section.columns.length > 0
+      ? section.columns
+      : [
+          { id: "sr",          label: "Sr. No",      kind: "number" },
+          { id: "particulars", label: "Particulars", kind: "text"   },
+          { id: "size",        label: "Size",        kind: "text"   },
+          { id: "quantity",    label: "Quantity",    kind: "number" },
+          { id: "rate",        label: "Rate",        kind: "number" },
+          { id: "amount",      label: "Amount",      kind: "number" }
+        ];
+
+    const rows: BillRow[] = section.customRows && section.customRows.length > 0
+      ? section.customRows
+      : section.rows.map((r, i) => ({
+          id: r.id,
+          cells: {
+            sr:          String(r.sr || i + 1),
+            particulars: r.particulars || "",
+            size:        r.size || "",
+            quantity:    String(r.quantity || 0),
+            rate:        String(r.rate || 0),
+            amount:      String(r.amount || 0)
+          }
+        }));
+
+    return {
+      id: section.id,
+      title: section.title,
+      page: section.page,
+      mode: section.mode,
+      columns,
+      rows
+    };
+  }
+
   return {
     id: section.id,
     title: section.title,
@@ -43,7 +80,8 @@ function sectionToBillTable(section: BillSection): BillTable {
         materialAmount:  String(r.materialAmount || 0),
         bold:            String(r.bold || false),
         fontSize:        String(r.fontSize || 11),
-        align:           r.align || "left"
+        align:           r.align || "left",
+        mode:            r.mode || ""
       }
     }))
   };
@@ -97,8 +135,6 @@ function loadInitialSections(): BillSection[] {
 
 type SelectedCell = { sectionId: string; rowId: string } | null;
 
-export type BillFormat = "standard" | "labourMaterial";
-
 export function App() {
   const [header, setHeader] = useState<HeaderTemplate>(initialHeader);
 
@@ -110,6 +146,7 @@ export function App() {
 
   const [billTitle, setBillTitle] = useState("New Bill");
   const [leftTab, setLeftTab] = useState<"details" | "scanner">("details");
+  const [isLeftDrawerOpen, setIsLeftDrawerOpen] = useState(false);
   const [dbPanelOpen, setDbPanelOpen] = useState(false);
   const [leftWidth, setLeftWidth] = useState(320);
   const [rightWidth, setRightWidth] = useState(400);
@@ -184,6 +221,12 @@ export function App() {
 
   // ── Derived totals ────────────────────────────────────────────────────────
   const sectionTotal = (section: BillSection) => {
+    if (billFormat === "custom") {
+      const table = sectionToBillTable(section, "custom");
+      const amountCol = table.columns.find(c => c.label.toLowerCase().includes('amount') || c.kind === 'number');
+      if (!amountCol) return 0;
+      return table.rows.reduce((sum, r) => sum + (parseFloat(r.cells[amountCol.id]) || 0), 0);
+    }
     if (billFormat === "labourMaterial") {
       return section.rows.reduce((s, r) => s + (r.materialAmount || 0), 0);
     }
@@ -192,6 +235,9 @@ export function App() {
   const sectionLabourTotal = (section: BillSection) => section.rows.reduce((s, r) => s + (r.labourAmount || 0), 0);
   const total = useMemo(
     () => {
+      if (billFormat === "custom") {
+        return sections.reduce((s, sec) => s + sectionTotal(sec), 0);
+      }
       if (billFormat === "labourMaterial") {
         return sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + (r.materialAmount || 0), 0), 0);
       }
@@ -202,7 +248,7 @@ export function App() {
   const balance = total - billDetails.advance;
   const totalItems = useMemo(() => sections.reduce((n, s) => n + s.rows.length, 0), [sections]);
 
-  const currentBillTables = useMemo(() => sections.map(sectionToBillTable), [sections]);
+  const currentBillTables = useMemo(() => sections.map(s => sectionToBillTable(s, billFormat)), [sections, billFormat]);
 
   const save = () => {
     localStorage.setItem("bill.header", JSON.stringify(header));
@@ -301,12 +347,16 @@ export function App() {
   };
 
   const updateRow = (sectionId: string, rowId: string, field: keyof EditorRow, value: string | number) => {
-    const applyInch = (sections.find(s => s.id === sectionId)?.mode ?? "template") !== "manual";
+    const section = sections.find(s => s.id === sectionId);
+    const tableMode = section?.mode ?? "template";
     updateSectionRows(sectionId, rows => {
       const updated = rows.map(r => {
         if (r.id !== rowId) return r;
         const next = { ...r, [field]: value } as EditorRow;
         if (field === "size") {
+          // Per-row mode overrides the table's mode.
+          const rowMode = next.mode ?? tableMode;
+          const applyInch = rowMode !== "manual";
           next.quantity = parseSize(next.size, applyInch);
         }
         return next;
@@ -369,11 +419,11 @@ export function App() {
     const exportTables = currentBillTables;
     if (format === "pdf") {
       // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
-      const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels });
+      const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels, billFormat });
       await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat }, columnLabels);
     }
-    else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels);
-    else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels);
+    else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
+    else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
   };
 
   // Open a bill PDF that was exported from this app and restore it for editing.
@@ -405,9 +455,17 @@ export function App() {
   };
 
   return (
-    <div className="appShell" style={{ gridTemplateColumns: `${leftWidth}px 6px 1fr 6px ${rightWidth}px` }}>
+    <div className="appShell" style={{ gridTemplateColumns: isLeftDrawerOpen ? `${leftWidth}px 6px 1fr 6px ${rightWidth}px` : `0px 0px 1fr 6px ${rightWidth}px` }}>
       {/* ── Top Header Bar ──────────────────────────────────────────────────── */}
       <header className="topHeader">
+        <button
+          className={`hdrBtn drawerToggleBtn ${isLeftDrawerOpen ? "active" : ""}`}
+          onClick={() => setIsLeftDrawerOpen(!isLeftDrawerOpen)}
+          title={isLeftDrawerOpen ? "Close Header & Details Drawer" : "Open Header & Details Drawer"}
+        >
+          <PanelLeft size={16} />
+          <span>{isLeftDrawerOpen ? "Close Drawer" : "Header & Details"}</span>
+        </button>
         <div className="topHeaderBrand">
           <span className="brandIcon">BA</span>
           Bill AI
@@ -426,6 +484,7 @@ export function App() {
           >
             <option value="standard">Standard (Rate × Qty)</option>
             <option value="labourMaterial">Labour + Material</option>
+            <option value="custom">Custom (Flexible Table)</option>
           </select>
         </div>
         <div className="topHeaderActions">
@@ -446,8 +505,8 @@ export function App() {
         </div>
       </header>
 
-      {/* ── Left Panel ──────────────────────────────────────────────────────── */}
-      <aside className="leftPanel">
+      {/* ── Left Panel Drawer ────────────────────────────────────────────────── */}
+      <aside className="leftPanel" style={{ display: isLeftDrawerOpen ? "flex" : "none" }}>
         <HeaderEditor header={header} onChange={setHeader} />
 
         <div className="leftPanelTabs">
@@ -617,7 +676,7 @@ export function App() {
         )}
       </aside>
 
-      <div className={`resizerHandle ${isResizingLeft ? "resizing" : ""}`} onMouseDown={startResizingLeft} />
+      <div className={`resizerHandle ${isResizingLeft ? "resizing" : ""}`} onMouseDown={startResizingLeft} style={{ display: isLeftDrawerOpen ? "block" : "none" }} />
 
       {/* ── Center Panel ────────────────────────────────────────────────────── */}
       <main className="centerPanel">
@@ -670,6 +729,27 @@ export function App() {
         {/* One card per section (table) */}
         {sections.map((section, sectionIndex) => {
           const isManual = (section.mode ?? "template") === "manual";
+          if (billFormat === "custom") {
+            return (
+              <BillTableEditor
+                key={section.id}
+                table={sectionToBillTable(section, "custom")}
+                tables={currentBillTables}
+                onChange={(updatedTable) => {
+                  setSections(prev => prev.map(s => s.id === updatedTable.id ? {
+                    ...s,
+                    title: updatedTable.title,
+                    page: updatedTable.page,
+                    mode: updatedTable.mode,
+                    columns: updatedTable.columns,
+                    customRows: updatedTable.rows
+                  } : s));
+                }}
+                onDelete={() => deleteTable(section.id)}
+                onAddTable={addTable}
+              />
+            );
+          }
           return (
           <div className="billTableCard" key={section.id}>
             <div className="billTableToolbar sectionToolbar">
@@ -739,7 +819,7 @@ export function App() {
                     <th style={{ width: 44 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.sr} onChange={e => updateColumnLabel("sr", e.target.value)} title="Click to rename this column" /></th>
                     <th><input className="colHeaderInput" value={columnLabels.particulars} onChange={e => updateColumnLabel("particulars", e.target.value)} title="Click to rename this column" /></th>
                     <th style={{ width: billFormat === "labourMaterial" ? 90 : 120 }}><input className="colHeaderInput" value={columnLabels.size} onChange={e => updateColumnLabel("size", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: billFormat === "labourMaterial" ? 65 : 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>
+                    <th style={{ width: billFormat === "labourMaterial" ? 75 : 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>
                     {billFormat === "standard" ? (
                       <>
                         <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.rate} onChange={e => updateColumnLabel("rate", e.target.value)} title="Click to rename this column" /></th>
@@ -747,10 +827,10 @@ export function App() {
                       </>
                     ) : (
                       <>
-                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 10 }}>Only Labour Charges</span></th>
-                        <th style={{ width: 70 }} className="thCenter"><span style={{ fontSize: 10 }}>Amount</span></th>
-                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 10 }}>Materials with Labour Charges</span></th>
-                        <th style={{ width: 70 }} className="thCenter"><span style={{ fontSize: 10 }}>Amount</span></th>
+                        <th style={{ width: 85 }} className="thCenter"><span style={{ fontSize: 11, lineHeight: 1.25, display: "block" }}>Only Labour<br/>Charges</span></th>
+                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 11 }}>Amount</span></th>
+                        <th style={{ width: 105 }} className="thCenter"><span style={{ fontSize: 11, lineHeight: 1.25, display: "block" }}>Materials with<br/>Labour Charges</span></th>
+                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 11 }}>Amount</span></th>
                       </>
                     )}
                     <th style={{ width: 60 }}></th>
@@ -791,15 +871,34 @@ export function App() {
                             placeholder="e.g. 3x4 or 12"
                             onFocus={select}
                           />
-                          {row.size.trim() && (() => {
-                            const converted = isManual ? row.size : convertAllPointValues(row.size);
-                            const parsed = parseSize(row.size, !isManual);
-                            const changed = !isManual && converted !== row.size;
+                          {(() => {
+                            const rowMode = row.mode ?? (isManual ? "manual" : "template");
+                            const rowIsManual = rowMode === "manual";
+                            const converted = rowIsManual ? row.size : convertAllPointValues(row.size);
+                            const parsed = parseSize(row.size, !rowIsManual);
+                            const changed = !rowIsManual && converted !== row.size;
                             return (
-                              <small className="sizeHint">
-                                {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
-                                {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
-                              </small>
+                              <div className="sizeRowControls">
+                                <button
+                                  className={`rowModeBtn ${rowIsManual ? "manual" : "template"}`}
+                                  onClick={() => {
+                                    const currentMode = row.mode ?? (isManual ? "manual" : "template");
+                                    const nextMode = currentMode === "manual" ? "template" : "manual";
+                                    updateRow(section.id, row.id, "mode", nextMode);
+                                  }}
+                                  title={rowIsManual
+                                    ? "This row: Manual (plain math). Click → Template (inch chart)."
+                                    : "This row: Template (inch chart). Click → Manual (plain math)."}
+                                >
+                                  {rowIsManual ? "M" : "T"}
+                                </button>
+                                {row.size.trim() && (
+                                  <small className="sizeHint">
+                                    {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
+                                    {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
+                                  </small>
+                                )}
+                              </div>
                             );
                           })()}
                         </td>
@@ -986,7 +1085,7 @@ export function App() {
         <p className="previewLabel">Live Preview</p>
 
         <div className="previewSheet" id="print-area">
-          <BillPreview header={header} sections={sections} billDetails={billDetails} columnLabels={columnLabels} />
+          <BillPreview header={header} sections={sections} billDetails={billDetails} columnLabels={columnLabels} billFormat={billFormat} />
         </div>
 
         <div>

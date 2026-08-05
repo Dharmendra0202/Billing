@@ -93,7 +93,12 @@ export type EditorRow = {
   bold?: boolean;
   fontSize?: number;
   align?: "left" | "center" | "right";
+  // Per-row override for template/manual mode. When set, overrides the table's mode.
+  // undefined = inherit from the table's mode (default behavior).
+  mode?: "template" | "manual";
 };
+
+export type BillFormat = "standard" | "labourMaterial" | "custom";
 
 // A bill can contain multiple independent tables ("sections").
 // Each section has an optional label (shown at the top-right of the table),
@@ -102,6 +107,9 @@ export type BillSection = {
   id: string;
   title: string;
   rows: EditorRow[];
+  // Dynamic columns and custom rows for "custom" format
+  columns?: BillColumn[];
+  customRows?: BillRow[];
   // "template" = apply inch-conversion chart to sizes (e.g. .6 → .50)
   // "manual"   = treat sizes as plain decimals / math (no conversion)
   // Defaults to "template" when missing (backward compatible).
@@ -110,3 +118,4 @@ export type BillSection = {
   // page; a higher number than the previous table starts a new page. Default 1.
   page?: number;
 };
+

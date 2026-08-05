@@ -16,7 +16,7 @@ import {
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
-import type { BillTable, HeaderTemplate, BillDetails, ColumnLabels } from "../types";
+import type { BillTable, HeaderTemplate, BillDetails, ColumnLabels, BillColumn } from "../types";
 import { defaultColumnLabels } from "../types";
 import { TINOS_REGULAR_BASE64, TINOS_BOLD_BASE64 } from "./tinosFont";
 import { convertAllPointValues } from "./inchConversion";
@@ -522,7 +522,7 @@ export async function exportProfessionalPDF(
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
-  options?: { fitToOnePage?: boolean; embed?: string; format?: "standard" | "labourMaterial" },
+  options?: { fitToOnePage?: boolean; embed?: string; format?: "standard" | "labourMaterial" | "custom" },
   columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
   const doc = new jsPDF();
@@ -533,7 +533,21 @@ export async function exportProfessionalPDF(
 
   // Calculate grand total across all tables
   const isLabourFormat = options?.format === "labourMaterial";
+  const isCustomFormat = options?.format === "custom";
+
+  const findCustomAmountCol = (cols: BillColumn[]) => {
+    const byIdOrLabel = cols.find(c => c.id === "amount" || c.label.toLowerCase().includes("amount"));
+    if (byIdOrLabel) return byIdOrLabel;
+    const numCols = cols.filter(c => c.kind === "number" && c.id !== "sr" && !c.label.toLowerCase().includes("sr"));
+    return numCols.length > 0 ? numCols[numCols.length - 1] : undefined;
+  };
+
   const tableTotal = (t: BillTable) => {
+    if (isCustomFormat) {
+      const amtCol = findCustomAmountCol(t.columns);
+      if (!amtCol) return 0;
+      return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells[amtCol.id]) || 0), 0);
+    }
     if (isLabourFormat) return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.materialAmount) || 0), 0);
     return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
   };
@@ -725,11 +739,68 @@ export async function exportProfessionalPDF(
   // For Labour + Material format we override colWidths/verticalX with 8 columns:
   // Sr | Particulars | Size | Quantity | Only Labour | Amount | Materials w/ Labour | Amount
   let labourCenterX = 0, labourAmtCenterX = 0, materialCenterX = 0, materialAmtCenterX = 0;
-  if (isLabourFormat) {
-    // Fixed proportional widths for the 8-column layout.
+  if (isCustomFormat) {
+    const customCols = (tables[0]?.columns && tables[0].columns.length > 0)
+      ? tables[0].columns
+      : [
+          { id: "sr", label: columns.sr, kind: "number" as const },
+          { id: "particulars", label: columns.particulars, kind: "text" as const },
+          { id: "amount", label: columns.amount, kind: "number" as const }
+        ];
+
     const cw = contentWidth;
-    const srWL = 12; const partWL = cw * 0.22; const sizeWL = cw * 0.12; const qtyWL = cw * 0.09;
-    const labourWL = cw * 0.11; const labourAmtWL = cw * 0.13; const matWL = cw * 0.11; const matAmtWL = cw - srWL - partWL - sizeWL - qtyWL - labourWL - labourAmtWL - matWL;
+    const fixedWidths: Record<string, number> = {
+      sr: 16,
+      size: 24,
+      quantity: 18,
+      rate: 18,
+      amount: 24
+    };
+
+    const computedWidths = customCols.map((c) => {
+      const key = c.id.toLowerCase();
+      const labelKey = c.label.toLowerCase();
+      if (key.includes("particular") || labelKey.includes("particular")) {
+        return -1;
+      }
+      for (const [k, w] of Object.entries(fixedWidths)) {
+        if (key.includes(k) || labelKey.includes(k)) return w;
+      }
+      return c.kind === "number" ? 22 : 25;
+    });
+
+    const definedSum = computedWidths.reduce((sum, w) => sum + (w > 0 ? w : 0), 0);
+    const partIdx = computedWidths.findIndex(w => w === -1);
+    const remaining = Math.max(30, cw - definedSum);
+    if (partIdx !== -1) {
+      computedWidths[partIdx] = remaining;
+    } else {
+      const lastTextIdx = customCols.reduce((acc, c, idx) => c.kind === "text" ? idx : acc, customCols.length - 1);
+      computedWidths[lastTextIdx] = Math.max(computedWidths[lastTextIdx], computedWidths[lastTextIdx] + remaining);
+    }
+
+    (colWidths as any).length = 0;
+    computedWidths.forEach(w => (colWidths as any).push(w));
+
+    (colX as any).length = 0;
+    let cumX = margin + 2;
+    for (let i = 0; i < colWidths.length; i++) { (colX as any).push(cumX); cumX += colWidths[i]; }
+
+    (verticalX as any).length = 0;
+    let vx = margin;
+    for (let i = 0; i < colWidths.length; i++) { (verticalX as any).push(vx); vx += colWidths[i]; }
+    (verticalX as any).push(pageWidth - margin);
+  } else if (isLabourFormat) {
+    // Optimized 8-column widths so headers fit cleanly in 2 lines without splitting words
+    const cw = contentWidth;
+    const srWL = 10;
+    const qtyWL = 18;
+    const sizeWL = 18;
+    const labourWL = 22;
+    const labourAmtWL = 18;
+    const matWL = 26;
+    const matAmtWL = 18;
+    const partWL = cw - (srWL + sizeWL + qtyWL + labourWL + labourAmtWL + matWL + matAmtWL);
     (colWidths as any).length = 0;
     [srWL, partWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].forEach(w => (colWidths as any).push(w));
     // Rebuild colX and verticalX for 8 columns
@@ -767,18 +838,26 @@ export async function exportProfessionalPDF(
   // Draws a shaded, bordered column-header row starting at the current yPos.
   // Returns the y-coordinate at the top of the header (for vertical line drawing).
   const drawTableHeader = (scale: number = 1): number => {
+    const headerFontSize = (isLabourFormat ? 9.5 : 11) * scale;
     doc.setFont("times", "bold");
-    doc.setFontSize(11 * scale);
+    doc.setFontSize(headerFontSize);
 
     // Build the label list and centres depending on the format.
-    const labels = isLabourFormat
-      ? [columns.sr, columns.particulars, columns.size, columns.quantity, "Only Labour Charges", "Amount", "Materials with labour Charges", "Amount"]
+    const customCols = isCustomFormat && tables[0]?.columns?.length ? tables[0].columns : null;
+    const labels = customCols
+      ? customCols.map(c => c.label)
+      : isLabourFormat
+      ? [columns.sr, columns.particulars, columns.size, "Quantity", "Only Labour\nCharges", "Amount", "Materials with\nLabour Charges", "Amount"]
       : [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
 
-    const labelLines = colWidths.map((w, i) => doc.splitTextToSize(labels[i] || "", Math.max(w - 3, 6)));
+    const labelLines = colWidths.map((w, i) => {
+      const text = labels[i] || "";
+      if (text.includes("\n")) return text.split("\n");
+      return doc.splitTextToSize(text, Math.max(w - 2, 6));
+    });
     const maxLines = Math.max(1, ...labelLines.map(l => l.length));
-    const hLineSpacing = 11 * scale * 0.42;
-    const hH = Math.max(headerHeight * scale, (maxLines - 1) * hLineSpacing + 11 * scale * 0.25 + 3.2 * scale);
+    const hLineSpacing = headerFontSize * 0.42;
+    const hH = Math.max(headerHeight * scale, (maxLines - 1) * hLineSpacing + headerFontSize * 0.25 + 3.2 * scale);
 
     const yTopHeader = yPos - 4 * scale;
     doc.setFillColor(245, 245, 245);
@@ -787,12 +866,17 @@ export async function exportProfessionalPDF(
     // Compute centres per column (Particulars = left-aligned, rest = center).
     let cx = margin;
     const centers = colWidths.map((w) => { const c = cx + w / 2; cx += w; return c; });
-    centers[1] = margin + colWidths[0] + 2; // Particulars left-aligned
+    if (!isCustomFormat) {
+      centers[1] = margin + colWidths[0] + 2; // Particulars left-aligned
+    }
 
     labelLines.forEach((lines, i) => {
       const n = lines.length;
       const yBase = yTopHeader + hH / 2 - ((n - 1) * hLineSpacing) / 2 + (11 * scale * 0.25) / 2;
-      doc.text(lines, centers[i], yBase, { align: i === 1 ? "left" : "center" });
+      const isPartCol = isCustomFormat && customCols ? customCols[i]?.label.toLowerCase().includes("particular") || i === 1 : i === 1;
+      const alignOption = isPartCol ? "left" : "center";
+      const posX = isPartCol ? (colX[i] || (margin + 2)) : centers[i];
+      doc.text(lines, posX, yBase, { align: alignOption });
     });
 
     doc.setDrawColor(0);
@@ -854,8 +938,9 @@ export async function exportProfessionalPDF(
       doc.setFontSize(nfs);
       const sizeRaw = row.cells.size || "";
       const isLSRow = sizeRaw.trim().toUpperCase() === "LS";
-      // Apply inch conversion when the table is in template mode (default).
-      const applyInch = (table.mode ?? "template") !== "manual";
+      // Apply inch conversion: per-row mode overrides the table's mode.
+      const rowMode = row.cells.mode || (table.mode ?? "template");
+      const applyInch = rowMode !== "manual";
       const sizeStr = (!isLSRow && applyInch && sizeRaw) ? convertAllPointValues(sizeRaw) : sizeRaw;
       const quantity = parseFloat(row.cells.quantity) || 0;
       const rate = parseFloat(row.cells.rate) || 0;
@@ -975,50 +1060,79 @@ export async function exportProfessionalPDF(
       const baselineFor = (n: number, lineSpacing: number, capHeight: number) =>
         yTop + rowHeight / 2 - ((Math.max(n, 1) - 1) * lineSpacing) / 2 + capHeight / 2;
 
-      // Sr. No (normal font, centred, wraps if ever needed).
-      doc.setFont("times", "normal");
-      doc.setFontSize(nfs);
-      doc.text(m.srLines, srCenterX, baselineFor(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
+      if (isCustomFormat && table.columns && table.columns.length > 0) {
+        doc.setFont("times", "normal");
+        doc.setFontSize(nfs);
+        table.columns.forEach((c, ci) => {
+          const rawVal = m.row.cells[c.id] ?? "";
+          let valStr = rawVal;
+          if (c.label.toLowerCase().includes("size") || c.id === "size") {
+            const applyInchM = (table.mode ?? "template") !== "manual";
+            valStr = applyInchM && rawVal ? convertAllPointValues(rawVal) : rawVal;
+          } else if (c.kind === "number") {
+            const num = parseFloat(rawVal) || 0;
+            if (c.label.toLowerCase().includes("amount")) {
+              valStr = num > 0 ? pdfCurrency(num) : "\u2014";
+            } else {
+              valStr = num > 0 ? pdfNumber(num) : "\u2014";
+            }
+          }
+          const cX = (verticalX[ci] + verticalX[ci + 1]) / 2;
+          const isPartCol = c.label.toLowerCase().includes("particular") || ci === 1;
+          const alignOpt = isPartCol ? (align === "right" ? "right" : align === "center" ? "center" : "left") : "center";
+          const drawPosX = isPartCol ? (align === "right" ? verticalX[ci + 1] - 2 : align === "center" ? cX : verticalX[ci] + 2) : cX;
+          const lines = doc.splitTextToSize(valStr || "\u2014", Math.max(colWidths[ci] - 3, 5));
+          doc.text(lines, drawPosX, baselineFor(lines.length, nLineSpacing, nCapHeight), { align: alignOpt });
+        });
 
-      // Particulars (per-row font size / weight, honours row alignment).
-      doc.setFont("times", m.isBold ? "bold" : "normal");
-      doc.setFontSize(m.fontSize);
-      const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
-      const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
-      doc.text(m.lines, drawX, baselineFor(m.lines.length, m.lineSpacing, m.capHeight), { align: alignOpt });
-
-      // Size / Quantity / Rate (or a single merged "LS" cell).
-      doc.setFont("times", "normal");
-      doc.setFontSize(nfs);
-      if (isLS) {
-        // Merge from Size through to the column before the last Amount.
-        const mergeStart = verticalX[2];
-        const mergeEnd = isLabourFormat ? verticalX[verticalX.length - 2] : verticalX[5];
-        doc.text("LS", (mergeStart + mergeEnd) / 2, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+        const amtCol = findCustomAmountCol(table.columns);
+        subtotal += amtCol ? (parseFloat(m.row.cells[amtCol.id]) || 0) : 0;
       } else {
-        const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
-        doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
-        doc.text(m.qtyLines, qtyCenterX, baselineFor(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
-        if (isLabourFormat) {
-          // Labour rate + amount, Material rate + amount
-          const labourRate = parseFloat(m.row.cells.labourRate) || 0;
-          const labourAmt = parseFloat(m.row.cells.labourAmount) || 0;
-          const materialRate = parseFloat(m.row.cells.materialRate) || 0;
-          const materialAmt = parseFloat(m.row.cells.materialAmount) || 0;
-          doc.text(labourRate > 0 ? pdfNumber(labourRate) : "\u2014", labourCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-          doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-          doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-          doc.text(materialAmt > 0 ? pdfCurrency(materialAmt) : "\u2014", materialAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-        } else {
-          doc.text(m.rateLines, rateCenterX, baselineFor(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
-        }
-      }
-      // Amount column (standard format only — labour format draws both amounts above).
-      if (!isLabourFormat) {
-        doc.text(m.amtLines, amtCenterX, baselineFor(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
-      }
+        // Sr. No (normal font, centred, wraps if ever needed).
+        doc.setFont("times", "normal");
+        doc.setFontSize(nfs);
+        doc.text(m.srLines, srCenterX, baselineFor(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
-      subtotal += isLabourFormat ? (parseFloat(m.row.cells.materialAmount) || 0) : (parseFloat(m.row.cells.amount) || 0);
+        // Particulars (per-row font size / weight, honours row alignment).
+        doc.setFont("times", m.isBold ? "bold" : "normal");
+        doc.setFontSize(m.fontSize);
+        const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
+        const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
+        doc.text(m.lines, drawX, baselineFor(m.lines.length, m.lineSpacing, m.capHeight), { align: alignOpt });
+
+        // Size / Quantity / Rate (or a single merged "LS" cell).
+        doc.setFont("times", "normal");
+        doc.setFontSize(nfs);
+        if (isLS) {
+          // Merge from Size through to the column before the last Amount.
+          const mergeStart = verticalX[2];
+          const mergeEnd = isLabourFormat ? verticalX[verticalX.length - 2] : verticalX[5];
+          doc.text("LS", (mergeStart + mergeEnd) / 2, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+        } else {
+          const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
+          doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          doc.text(m.qtyLines, qtyCenterX, baselineFor(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          if (isLabourFormat) {
+            // Labour rate + amount, Material rate + amount
+            const labourRate = parseFloat(m.row.cells.labourRate) || 0;
+            const labourAmt = parseFloat(m.row.cells.labourAmount) || 0;
+            const materialRate = parseFloat(m.row.cells.materialRate) || 0;
+            const materialAmt = parseFloat(m.row.cells.materialAmount) || 0;
+            doc.text(labourRate > 0 ? pdfNumber(labourRate) : "\u2014", labourCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(materialAmt > 0 ? pdfCurrency(materialAmt) : "\u2014", materialAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+          } else {
+            doc.text(m.rateLines, rateCenterX, baselineFor(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          }
+        }
+        // Amount column (standard format only — labour format draws both amounts above).
+        if (!isLabourFormat) {
+          doc.text(m.amtLines, amtCenterX, baselineFor(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        }
+
+        subtotal += isLabourFormat ? (parseFloat(m.row.cells.materialAmount) || 0) : (parseFloat(m.row.cells.amount) || 0);
+      }
 
       yPos += rowHeight;
       // Draw horizontal grid line below the row
@@ -1038,7 +1152,21 @@ export async function exportProfessionalPDF(
     doc.setFontSize(10 * scale);
     const yBaseTotal = totalTop + totalRowH / 2 + 1.25 * scale;
 
-    if (isLabourFormat) {
+    if (isCustomFormat && table.columns && table.columns.length > 0) {
+      const amtCol = findCustomAmountCol(table.columns);
+      const amtColIdx = amtCol ? table.columns.findIndex(c => c.id === amtCol.id) : -1;
+      const totalColIdx = amtColIdx !== -1 ? amtColIdx : table.columns.length - 1;
+      const labelColIdx = Math.max(0, totalColIdx - 1);
+
+      doc.line(verticalX[labelColIdx], totalTop, verticalX[totalColIdx + 1], totalTop);
+      doc.line(verticalX[labelColIdx], totalBot, verticalX[totalColIdx + 1], totalBot);
+      doc.line(verticalX[labelColIdx], totalTop, verticalX[labelColIdx], totalBot);
+      doc.line(verticalX[totalColIdx], totalTop, verticalX[totalColIdx], totalBot);
+      doc.line(verticalX[totalColIdx + 1], totalTop, verticalX[totalColIdx + 1], totalBot);
+
+      doc.text("Total", (verticalX[labelColIdx] + verticalX[totalColIdx]) / 2, yBaseTotal, { align: "center" });
+      doc.text(pdfCurrency(subtotal), (verticalX[totalColIdx] + verticalX[totalColIdx + 1]) / 2, yBaseTotal, { align: "center" });
+    } else if (isLabourFormat) {
       // Two "Total" boxes: one for Labour Amount, one for Material Amount.
       const labourSubtotal = table.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0);
       // Labour total boxes (col 4 = label "Total", col 5 = labour sum)
@@ -1091,7 +1219,8 @@ export async function exportProfessionalPDF(
       // Account for wrapped Size lines too.
       const sizeRawM = row.cells.size || "";
       const isLSRowM = sizeRawM.trim().toUpperCase() === "LS";
-      const applyInchM = (table.mode ?? "template") !== "manual";
+      const rowModeM = row.cells.mode || (table.mode ?? "template");
+      const applyInchM = rowModeM !== "manual";
       const sizeStrM = (!isLSRowM && applyInchM && sizeRawM) ? convertAllPointValues(sizeRawM) : sizeRawM;
       doc.setFont("times", "normal");
       doc.setFontSize(11);
@@ -1217,16 +1346,26 @@ export async function exportProfessionalExcel(
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
-  columns: ColumnLabels = defaultColumnLabels
+  columns: ColumnLabels = defaultColumnLabels,
+  options?: { format?: "standard" | "labourMaterial" | "custom" }
 ): Promise<void> {
-  const tableTotal = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
+  const isLabourFormat = options?.format === "labourMaterial";
+  const isCustomFormat = options?.format === "custom";
+
+  const tableTotal = (t: BillTable) => {
+    if (isCustomFormat) {
+      const amtCol = t.columns.find(c => c.label.toLowerCase().includes("amount") || c.kind === "number");
+      if (!amtCol) return 0;
+      return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells[amtCol.id]) || 0), 0);
+    }
+    if (isLabourFormat) return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.materialAmount) || 0), 0);
+    return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
+  };
   const total = tables.reduce((sum, t) => sum + tableTotal(t), 0);
   const balance = total - billDetails.advance;
   const multipleTables = tables.length > 1;
 
   const wb = new ExcelJS.Workbook();
-  // Page setup: fit ALL columns onto one page width so columns never spill onto
-  // a separate page. Height flows naturally (rows are never split mid-row).
   const ws = wb.addWorksheet("Bill", {
     pageSetup: {
       fitToPage: true,
@@ -1237,14 +1376,25 @@ export async function exportProfessionalExcel(
     }
   });
 
-  ws.columns = [
-    { width: 8 }, { width: 45 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 16 }
-  ];
-
-  const LAST_COL = "F";
   const thin = { style: "thin" as const, color: { argb: "FF000000" } };
   const cellBorder = { top: thin, left: thin, bottom: thin, right: thin };
   const headerFill = { type: "pattern" as const, pattern: "solid" as const, fgColor: { argb: "FFF0F0F0" } };
+
+  let LAST_COL = "F";
+  if (isLabourFormat) {
+    LAST_COL = "H";
+    ws.columns = [
+      { width: 8 }, { width: 35 }, { width: 12 }, { width: 10 }, { width: 14 }, { width: 14 }, { width: 16 }, { width: 14 }
+    ];
+  } else if (isCustomFormat && tables[0]?.columns?.length) {
+    const colCount = tables[0].columns.length;
+    LAST_COL = String.fromCharCode(64 + Math.min(colCount, 26));
+    ws.columns = tables[0].columns.map(c => ({ width: c.kind === "number" ? 14 : 30 }));
+  } else {
+    ws.columns = [
+      { width: 8 }, { width: 45 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 16 }
+    ];
+  }
 
   type BannerOpts = { align?: "left" | "center" | "right"; bold?: boolean; size?: number };
   const addBanner = (text: string, opts: BannerOpts = {}) => {
@@ -1285,13 +1435,93 @@ export async function exportProfessionalExcel(
   }
 
   tables.forEach((table) => {
-    // Optional left-aligned table label (e.g. "Master Bedroom")
     if (table.title && table.title.trim()) {
       const t = ws.addRow([table.title]);
       t.getCell(1).font = { bold: true, size: 12 };
     }
 
-    // Column header row
+    if (isCustomFormat) {
+      const cols = table.columns;
+      const hr = ws.addRow(cols.map(c => c.label));
+      hr.eachCell(c => {
+        c.font = { bold: true };
+        c.fill = headerFill;
+        c.border = cellBorder;
+        c.alignment = { horizontal: "center" };
+      });
+
+      table.rows.forEach(row => {
+        const rowVals = cols.map(c => {
+          const v = row.cells[c.id] ?? "";
+          if (c.kind === "number") {
+            const num = parseFloat(v);
+            return !isNaN(num) ? (c.label.toLowerCase().includes("amount") ? `${formatIndianNumber(num)}/-` : num) : v;
+          }
+          return v;
+        });
+        const dr = ws.addRow(rowVals);
+        dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
+      });
+
+      const totRow = cols.map((col, idx) => {
+        if (col.kind === "number") {
+          const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[col.id]) || 0), 0);
+          return `${formatIndianNumber(colSum)}/-`;
+        }
+        return idx === 0 ? "Total" : "";
+      });
+      const tr = ws.addRow(totRow);
+      tr.eachCell((c, colNum) => {
+        if (cols[colNum - 1]?.kind === "number" || colNum === 1) {
+          c.font = { bold: true };
+          c.border = cellBorder;
+          c.alignment = { horizontal: "center" };
+        }
+      });
+      addSpacer();
+      return;
+    }
+
+    if (isLabourFormat) {
+      const hr = ws.addRow([columns.sr, columns.particulars, columns.size, columns.quantity, "Only Labour Charges", "Amount", "Materials with labour Charges", "Amount"]);
+      hr.eachCell(c => {
+        c.font = { bold: true };
+        c.fill = headerFill;
+        c.border = cellBorder;
+        c.alignment = { horizontal: "center" };
+      });
+
+      table.rows.forEach((row, index) => {
+        const lRate = parseFloat(row.cells.labourRate) || 0;
+        const lAmt = parseFloat(row.cells.labourAmount) || 0;
+        const mRate = parseFloat(row.cells.materialRate) || 0;
+        const mAmt = parseFloat(row.cells.materialAmount) || 0;
+        const dr = ws.addRow([
+          row.cells.sr || String(index + 1),
+          row.cells.particulars || "",
+          row.cells.size || "",
+          row.cells.quantity || "",
+          lRate > 0 ? lRate : "",
+          lAmt > 0 ? `${formatIndianNumber(lAmt)}/-` : "",
+          mRate > 0 ? mRate : "",
+          mAmt > 0 ? `${formatIndianNumber(mAmt)}/-` : ""
+        ]);
+        dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
+      });
+
+      const lTotal = table.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0);
+      const mTotal = table.rows.reduce((s, r) => s + (parseFloat(r.cells.materialAmount) || 0), 0);
+      const tr = ws.addRow(["", "", "", "Total", "Labour Total", `${formatIndianNumber(lTotal)}/-`, "Material Total", `${formatIndianNumber(mTotal)}/-`]);
+      [4, 5, 6, 7, 8].forEach(i => {
+        tr.getCell(i).font = { bold: true };
+        tr.getCell(i).border = cellBorder;
+        tr.getCell(i).alignment = { horizontal: "center" };
+      });
+      addSpacer();
+      return;
+    }
+
+    // Standard format
     const hr = ws.addRow([columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount]);
     hr.eachCell(c => {
       c.font = { bold: true };
@@ -1300,7 +1530,6 @@ export async function exportProfessionalExcel(
       c.alignment = { horizontal: "center" };
     });
 
-    // Data rows
     table.rows.forEach((row, index) => {
       const amtVal = parseFloat(row.cells.amount) || 0;
       const qty = parseFloat(row.cells.quantity) || 0;
@@ -1319,13 +1548,11 @@ export async function exportProfessionalExcel(
       dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
       [1, 3, 4, 5, 6].forEach(i => { dr.getCell(i).alignment = { horizontal: "center" }; });
       if (isLS) {
-        // Merge Size + Quantity + Rate into one centered "LS" cell
         ws.mergeCells(`C${dr.number}:E${dr.number}`);
         dr.getCell(3).alignment = { horizontal: "center" };
       }
     });
 
-    // In-table Total row ("Total" under Rate, summed amount under Amount)
     const sub = tableTotal(table);
     const tr = ws.addRow(["", "", "", "", "Total", `${formatIndianNumber(sub)}/-`]);
     [5, 6].forEach(i => {
@@ -1336,16 +1563,21 @@ export async function exportProfessionalExcel(
     addSpacer();
   });
 
-  // Grand totals (Total always; Advance/Balance optional)
+  // Grand totals
   const summaryLines: [string, string][] = [];
   if (billDetails.showGrandTotal !== false) summaryLines.push([multipleTables ? "Grand Total:" : "Total:", `${formatIndianNumber(total)}/-`]);
   if (billDetails.showAdvance !== false) summaryLines.push(["Advance:", `${formatIndianNumber(billDetails.advance)}/-`]);
   if (billDetails.showBalance !== false) summaryLines.push(["Balance:", `${formatIndianNumber(balance)}/-`]);
   summaryLines.forEach(([label, value]) => {
-    const r = ws.addRow(["", "", "", "", label, value]);
-    r.getCell(5).font = { bold: true };
-    r.getCell(6).font = { bold: true };
-    r.getCell(6).alignment = { horizontal: "center" };
+    const lastColIdx = isLabourFormat ? 8 : (isCustomFormat && tables[0]?.columns?.length ? tables[0].columns.length : 6);
+    const labelColIdx = Math.max(1, lastColIdx - 1);
+    const rowArray = Array(lastColIdx).fill("");
+    rowArray[labelColIdx - 1] = label;
+    rowArray[lastColIdx - 1] = value;
+    const r = ws.addRow(rowArray);
+    r.getCell(labelColIdx).font = { bold: true };
+    r.getCell(lastColIdx).font = { bold: true };
+    r.getCell(lastColIdx).alignment = { horizontal: "center" };
   });
   addSpacer();
 
@@ -1376,9 +1608,21 @@ export async function exportProfessionalWord(
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
-  columns: ColumnLabels = defaultColumnLabels
+  columns: ColumnLabels = defaultColumnLabels,
+  options?: { format?: "standard" | "labourMaterial" | "custom" }
 ): Promise<void> {
-  const tableTotalW = (t: BillTable) => t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
+  const isLabourFormat = options?.format === "labourMaterial";
+  const isCustomFormat = options?.format === "custom";
+
+  const tableTotalW = (t: BillTable) => {
+    if (isCustomFormat) {
+      const amtCol = t.columns.find(c => c.label.toLowerCase().includes("amount") || c.kind === "number");
+      if (!amtCol) return 0;
+      return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells[amtCol.id]) || 0), 0);
+    }
+    if (isLabourFormat) return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.materialAmount) || 0), 0);
+    return t.rows.reduce((sum, row) => sum + (parseFloat(row.cells.amount) || 0), 0);
+  };
   const total = tables.reduce((sum, t) => sum + tableTotalW(t), 0);
   const balance = total - billDetails.advance;
   const multipleTables = tables.length > 1;
@@ -1390,7 +1634,6 @@ export async function exportProfessionalWord(
   const fsTagline = header.fontSizeTagline || 11;
 
   if (billDetails.showHeader !== false) {
-    // Business Name with a top border (single line above name)
     children.push(
       new Paragraph({
         children: [new TextRun({ text: header.businessName, bold: false, size: fsName * 2 })],
@@ -1488,30 +1731,14 @@ export async function exportProfessionalWord(
     })
   );
 
-  // Build the column-header row (reused for every section table)
-  const buildHeaderRow = () =>
-    new TableRow({
-      children: [
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.rate, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.amount, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
-      ]
-    });
-
   // Render each section table
   tables.forEach((table, i) => {
-    // Manual paging: start a new page when this table's page number is higher
-    // than the previous table's.
     const thisPage = table.page ?? 1;
     const prevPage = i > 0 ? (tables[i - 1].page ?? 1) : thisPage;
     if (i > 0 && thisPage > prevPage) {
       children.push(new Paragraph({ children: [new PageBreak()] }));
     }
 
-    // Optional left-aligned label above the table (e.g. "Master Bedroom")
     if (table.title && table.title.trim()) {
       children.push(
         new Paragraph({
@@ -1521,6 +1748,119 @@ export async function exportProfessionalWord(
         })
       );
     }
+
+    if (isCustomFormat) {
+      const cols = table.columns;
+      const colWidth = Math.floor(100 / cols.length);
+      const customHeaderRow = new TableRow({
+        children: cols.map(c => new TableCell({
+          children: [new Paragraph({ children: [new TextRun({ text: c.label, bold: true })], alignment: c.kind === "number" ? AlignmentType.RIGHT : AlignmentType.LEFT })],
+          shading: { fill: "F0F0F0" },
+          width: { size: colWidth, type: WidthType.PERCENTAGE }
+        }))
+      });
+
+      const tableRows: TableRow[] = [customHeaderRow];
+
+      table.rows.forEach((row) => {
+        const cells = cols.map(c => {
+          const val = row.cells[c.id] ?? "";
+          const isNum = c.kind === "number";
+          const numVal = parseFloat(val);
+          const displayVal = isNum && !isNaN(numVal) ? (c.label.toLowerCase().includes("amount") ? formatIndianCurrency(numVal) : pdfNumber(numVal)) : val;
+          return new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: displayVal })], alignment: isNum ? AlignmentType.RIGHT : AlignmentType.LEFT })],
+            width: { size: colWidth, type: WidthType.PERCENTAGE }
+          });
+        });
+        tableRows.push(new TableRow({ children: cells }));
+      });
+
+      const totalCells = cols.map((c, idx) => {
+        if (c.kind === "number") {
+          const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[c.id]) || 0), 0);
+          return new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(colSum)}/-`, bold: true })], alignment: AlignmentType.RIGHT })],
+            width: { size: colWidth, type: WidthType.PERCENTAGE }
+          });
+        }
+        return new TableCell({
+          children: [new Paragraph({ children: [new TextRun({ text: idx === 0 ? "Total" : "", bold: true })] })],
+          width: { size: colWidth, type: WidthType.PERCENTAGE }
+        });
+      });
+      tableRows.push(new TableRow({ children: totalCells }));
+
+      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      return;
+    }
+
+    if (isLabourFormat) {
+      const labourHeaderRow = new TableRow({
+        children: [
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 6, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 30, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Only Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Materials with labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } })
+        ]
+      });
+
+      const tableRows: TableRow[] = [labourHeaderRow];
+
+      table.rows.forEach((row, index) => {
+        const lRate = parseFloat(row.cells.labourRate) || 0;
+        const lAmt = parseFloat(row.cells.labourAmount) || 0;
+        const mRate = parseFloat(row.cells.materialRate) || 0;
+        const mAmt = parseFloat(row.cells.materialAmount) || 0;
+        tableRows.push(new TableRow({
+          children: [
+            new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] }),
+            new TableCell({ children: [new Paragraph({ text: row.cells.particulars || "" })] }),
+            new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
+            new TableCell({ children: [new Paragraph({ text: row.cells.quantity || "", alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ text: lRate > 0 ? pdfNumber(lRate) : "—", alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ text: lAmt > 0 ? formatIndianCurrency(lAmt) : "—", alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ text: mRate > 0 ? pdfNumber(mRate) : "—", alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ text: mAmt > 0 ? formatIndianCurrency(mAmt) : "—", alignment: AlignmentType.CENTER })] })
+          ]
+        }));
+      });
+
+      const lSub = table.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0);
+      const mSub = table.rows.reduce((s, r) => s + (parseFloat(r.cells.materialAmount) || 0), 0);
+      tableRows.push(new TableRow({
+        children: [
+          new TableCell({ children: [new Paragraph({ text: "" })] }),
+          new TableCell({ children: [new Paragraph({ text: "" })] }),
+          new TableCell({ children: [new Paragraph({ text: "" })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Total", bold: true })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Labour Total", bold: true })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(lSub)}/-`, bold: true })], alignment: AlignmentType.CENTER })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Material Total", bold: true })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(mSub)}/-`, bold: true })], alignment: AlignmentType.CENTER })] })
+        ]
+      }));
+
+      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      return;
+    }
+
+    // Standard format
+    const buildHeaderRow = () =>
+      new TableRow({
+        children: [
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.rate, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.amount, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
+        ]
+      });
 
     const tableRows: TableRow[] = [buildHeaderRow()];
 
@@ -1551,7 +1891,6 @@ export async function exportProfessionalWord(
 
       const middleCells = isLS
         ? [
-            // Merge Size + Quantity + Rate into one centered "LS" cell
             new TableCell({
               columnSpan: 3,
               children: [new Paragraph({ children: [new TextRun({ text: "LS" })], alignment: AlignmentType.CENTER })]
@@ -1566,7 +1905,6 @@ export async function exportProfessionalWord(
       tableRows.push(new TableRow({ children: [srCell, particularsCell, ...middleCells, amountCell] }));
     });
 
-    // In-table Total row: "Total" under Rate column, summed amount under Amount column
     const sub = tableTotalW(table);
     tableRows.push(
       new TableRow({

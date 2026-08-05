@@ -1705,3 +1705,221 @@ input:focus, textarea:focus, select:focus {
   font-size: 10px;
   padding: 4px 3px;
 }
+
+/* Custom Table Editor (3rd Format - Flexible Table) */
+.tableEditor {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.tableToolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+.tableTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1e293b;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: transparent;
+}
+.tableTitle:hover, .tableTitle:focus {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  outline: none;
+}
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.textButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.textButton:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.formulaHelp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #1e40af;
+  margin-bottom: 14px;
+}
+.formulaHelp code {
+  background: #dbeafe;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+.gridWrap {
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+.entryTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.entryTable th, .entryTable td {
+  border: 1px solid #cbd5e1;
+  padding: 4px 6px;
+}
+.entryTable th {
+  background: #f8fafc;
+}
+.columnHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.columnHeader input {
+  font-weight: 700;
+  color: #1e293b;
+  border: 1px solid transparent;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  width: 100%;
+}
+.columnHeader input:focus {
+  border-color: #3b82f6;
+  background: #fff;
+  outline: none;
+}
+.columnHeader select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+}
+.entryTable td input {
+  width: 100%;
+  border: 1px solid transparent;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.entryTable td input:focus {
+  border-color: #3b82f6;
+  background: #fff;
+  outline: none;
+}
+.totalsStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid #e2e8f0;
+  font-size: 13px;
+  color: #475569;
+}
+
+/* Left Drawer Toggle Button */
+.hdrBtn.drawerToggleBtn {
+  background: #334155;
+  color: #f8fafc;
+  border: 1px solid #475569;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.hdrBtn.drawerToggleBtn:hover {
+  background: #475569;
+}
+/* Live Preview Section Table Styling */
+.pbSectionBlock {
+  margin-bottom: 16px;
+}
+.pbTable {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 11px;
+}
+.pbTable th, .pbTable td {
+  border: 1px solid #1e293b;
+  padding: 5px 6px;
+  word-break: keep-all;
+}
+.pbTable th {
+  background: #f8fafc;
+  font-weight: 700;
+  text-align: center;
+  word-break: keep-all;
+  white-space: normal;
+  hyphens: none;
+  line-height: 1.25;
+}
+.pbTable th.pbThSr { width: 34px; }
+.pbTable th.pbThQty { width: 55px; min-width: 50px; }
+.pbTable th.pbThSize { width: 70px; }
+.pbTable th.pbThLabourHeader { min-width: 75px; }
+.pbTable th.pbThMaterialHeader { min-width: 95px; }
+.pbTable th.pbThAmt { width: 60px; }
+.pbTable td {
+  vertical-align: middle;
+}
+
+
+
+
+/* Per-row Template/Manual toggle in the Size cell */
+.sizeRowControls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+.rowModeBtn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rowModeBtn.template {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.rowModeBtn.manual {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+.rowModeBtn:hover { opacity: 0.8; }

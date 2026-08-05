@@ -1,5 +1,5 @@
-import { Fragment } from "react";
-import type { BillDetails, BillSection, ColumnLabels, HeaderTemplate } from "../types";
+import { Fragment, useMemo } from "react";
+import type { BillDetails, BillSection, ColumnLabels, HeaderTemplate, BillFormat } from "../types";
 import { defaultColumnLabels } from "../types";
 import { money, formatNumber } from "../lib/billMath";
 import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
@@ -23,9 +23,14 @@ type Row = {
   quantity: number;
   rate: number;
   amount: number;
+  labourRate?: number;
+  labourAmount?: number;
+  materialRate?: number;
+  materialAmount?: number;
   bold?: boolean;
   fontSize?: number;
   align?: "left" | "center" | "right";
+  mode?: "template" | "manual";
 };
 
 type Props = {
@@ -33,10 +38,11 @@ type Props = {
   sections: BillSection[];
   billDetails: BillDetails;
   columnLabels?: ColumnLabels;
+  billFormat?: BillFormat;
 };
 
 // Convert each part of a size expression and return both original + converted display
-function convertSizeDisplay(size: string, applyInch: boolean = true): { original: string; converted: string; value: number } {
+export function convertSizeDisplay(size: string, applyInch: boolean = true): { original: string; converted: string; value: number } {
   const clean = size.trim();
   if (!clean) return { original: "", converted: "", value: 1 };
 
@@ -67,10 +73,194 @@ function hasConvertiblePoints(size: string): boolean {
 }
 
 // Renders a single section table (with an optional top-left label).
-function SectionTable({ section, cols }: { section: BillSection; cols: ColumnLabels }) {
+function SectionTable({ section, cols, billFormat }: { section: BillSection; cols: ColumnLabels; billFormat?: BillFormat }) {
   const rows = section.rows as Row[];
-  const subtotal = rows.reduce((s, r) => s + r.amount, 0);
   const applyInch = (section.mode ?? "template") !== "manual";
+
+  if (billFormat === "custom") {
+    const customCols = section.columns && section.columns.length > 0
+      ? section.columns
+      : [
+          { id: "sr", label: cols.sr, kind: "number" as const },
+          { id: "particulars", label: cols.particulars, kind: "text" as const },
+          { id: "amount", label: cols.amount, kind: "number" as const }
+        ];
+    const customRows: { id: string; cells: Record<string, string> }[] = section.customRows && section.customRows.length > 0
+      ? section.customRows
+      : section.rows.map(r => ({
+          id: r.id,
+          cells: { sr: String(r.sr), particulars: r.particulars, amount: String(r.amount) }
+        }));
+
+    const getColAlign = (col: { id: string; label: string; kind: string }) => {
+      const label = col.label.toLowerCase();
+      const id = col.id.toLowerCase();
+      if (id === "sr" || label.includes("sr")) return "center";
+      if (id === "particulars" || label.includes("particular")) return "left";
+      if (id === "size" || label.includes("size")) return "center";
+      if (id === "quantity" || label.includes("qty") || label.includes("quantity")) return "center";
+      if (col.kind === "number") return "right";
+      return "left";
+    };
+
+    const amtCol = customCols.find(c => c.id === "amount" || c.label.toLowerCase().includes("amount"));
+    const amtColIdx = amtCol ? customCols.findIndex(c => c.id === amtCol.id) : customCols.length - 1;
+    const subtotalCustom = amtCol ? customRows.reduce((s, r) => s + (parseFloat(r.cells[amtCol.id]) || 0), 0) : 0;
+
+    return (
+      <div className="pbSectionBlock">
+        {section.title.trim() && (
+          <p className="pbSectionLabel">{section.title}</p>
+        )}
+        <table className="pbTable">
+          <thead>
+            <tr>
+              {customCols.map(col => (
+                <th key={col.id} style={{ textAlign: getColAlign(col) }}>
+                  {col.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {customRows.length === 0 && (
+              <tr>
+                <td colSpan={customCols.length} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
+                  No items yet — add rows in the editor
+                </td>
+              </tr>
+            )}
+            {customRows.map(r => (
+              <tr key={r.id}>
+                {customCols.map(col => {
+                  const val = r.cells[col.id] ?? "";
+                  const isNum = col.kind === "number";
+                  const isSizeCol = col.label.toLowerCase().includes("size") || col.id === "size";
+                  const numVal = parseFloat(val);
+                  const displayVal = isNum && !isNaN(numVal) ? (col.label.toLowerCase().includes("amount") ? money(numVal) : formatNumber(numVal)) : val;
+                  const align = getColAlign(col);
+                  return (
+                    <td key={col.id} style={{ textAlign: align }}>
+                      {isSizeCol && val ? (() => {
+                        const { original, converted } = convertSizeDisplay(val, applyInch);
+                        return (
+                          <>
+                            <span className="pbSizeRaw">{original}</span>
+                            {converted && (
+                              <span className="pbSizeConverted" style={{ display: "block" }}>→ {converted}</span>
+                            )}
+                          </>
+                        );
+                      })() : (displayVal || <span style={{ color: "#bbb" }}>—</span>)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="pbTotalRow">
+              <td colSpan={Math.max(1, amtColIdx - 1)} className="pbTotalSpacer"></td>
+              <td className="pbTotalLabel" style={{ textAlign: "center", fontWeight: "bold" }}>Total</td>
+              <td className="pbTotalValue" style={{ textAlign: "right", fontWeight: "bold" }}>{money(subtotalCustom).replace("₹ ", "")}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    );
+  }
+
+  if (billFormat === "labourMaterial") {
+    const labourTotal = rows.reduce((s, r) => s + (r.labourAmount || 0), 0);
+    const materialTotal = rows.reduce((s, r) => s + (r.materialAmount || 0), 0);
+
+    return (
+      <div className="pbSectionBlock">
+        {section.title.trim() && (
+          <p className="pbSectionLabel">{section.title}</p>
+        )}
+        <table className="pbTable">
+          <thead>
+            <tr>
+              <th className="pbThSr">{cols.sr}</th>
+              <th className="pbThParticulars">{cols.particulars}</th>
+              <th className="pbThSize">{cols.size}</th>
+              <th className="pbThQty">Quantity</th>
+              <th className="pbThLabourHeader">Only Labour<br />Charges</th>
+              <th className="pbThAmt">Amount</th>
+              <th className="pbThMaterialHeader">Materials with<br />Labour Charges</th>
+              <th className="pbThAmt">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={8} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
+                  No items yet — add rows in the center panel
+                </td>
+              </tr>
+            )}
+            {rows.map(row => {
+              const isLS = (row.size || "").trim().toUpperCase() === "LS";
+              const lRate = row.labourRate || 0;
+              const lAmt = row.labourAmount || 0;
+              const mRate = row.materialRate || 0;
+              const mAmt = row.materialAmount || 0;
+              return (
+                <tr key={row.id}>
+                  <td className="pbSrCell">{row.sr}</td>
+                  <td
+                    className="pbParticularsCell"
+                    style={{
+                      fontWeight: row.bold ? "bold" : "normal",
+                      fontSize: row.fontSize ? `${row.fontSize}px` : undefined,
+                      textAlign: row.align || "left"
+                    }}
+                  >
+                    {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
+                  </td>
+                  {isLS ? (
+                    <td colSpan={2} className="pbLsCell">LS</td>
+                  ) : (
+                    <>
+                      <td className="pbSizeCell">
+                        {row.size ? (() => {
+                          const rowApplyInch = (row as any).mode ? (row as any).mode !== "manual" : applyInch;
+                          const { original, converted } = convertSizeDisplay(row.size, rowApplyInch);
+                          return (
+                            <>
+                              <span className="pbSizeRaw">{original}</span>
+                              {converted && (
+                                <span className="pbSizeConverted">→ {converted}</span>
+                              )}
+                            </>
+                          );
+                        })() : <span style={{ color: "#bbb" }}>—</span>}
+                      </td>
+                      <td className="pbQtyCell">{row.quantity || "—"}</td>
+                    </>
+                  )}
+                  <td className="pbRateCell" style={{ textAlign: "center" }}>{lRate > 0 ? formatNumber(lRate) : "—"}</td>
+                  <td className="pbAmtCell" style={{ textAlign: "center" }}>{lAmt > 0 ? money(lAmt) : "—"}</td>
+                  <td className="pbRateCell" style={{ textAlign: "center" }}>{mRate > 0 ? formatNumber(mRate) : "—"}</td>
+                  <td className="pbAmtCell" style={{ textAlign: "center" }}>{mAmt > 0 ? money(mAmt) : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="pbTotalRow">
+              <td colSpan={4} className="pbTotalSpacer" style={{ textAlign: "right", fontWeight: "bold" }}>Total</td>
+              <td colSpan={2} style={{ textAlign: "center", fontWeight: "bold" }}>Labour: {money(labourTotal).replace("₹ ", "")}</td>
+              <td colSpan={2} style={{ textAlign: "center", fontWeight: "bold" }}>Material: {money(materialTotal).replace("₹ ", "")}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    );
+  }
+
+  const subtotal = rows.reduce((s, r) => s + r.amount, 0);
 
   return (
     <div className="pbSectionBlock">
@@ -117,7 +307,8 @@ function SectionTable({ section, cols }: { section: BillSection; cols: ColumnLab
                 <>
                   <td className="pbSizeCell">
                     {row.size ? (() => {
-                      const { original, converted } = convertSizeDisplay(row.size, applyInch);
+                      const rowApplyInch = row.mode ? row.mode !== "manual" : applyInch;
+                      const { original, converted } = convertSizeDisplay(row.size, rowApplyInch);
                       return (
                         <>
                           <span className="pbSizeRaw">{original}</span>
@@ -149,9 +340,24 @@ function SectionTable({ section, cols }: { section: BillSection; cols: ColumnLab
   );
 }
 
-export function BillPreview({ header, sections, billDetails, columnLabels }: Props) {
+export function BillPreview({ header, sections, billDetails, columnLabels, billFormat }: Props) {
   const cols = columnLabels ?? defaultColumnLabels;
-  const total = sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0);
+  const total = useMemo(() => {
+    if (billFormat === "labourMaterial") {
+      return sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + (r.materialAmount || 0), 0), 0);
+    }
+    if (billFormat === "custom") {
+      return sections.reduce((s, section) => {
+        const customCols = section.columns && section.columns.length > 0 ? section.columns : [];
+        const customRows = section.customRows && section.customRows.length > 0 ? section.customRows : [];
+        const amtCol = customCols.find(c => c.label.toLowerCase().includes("amount") || c.kind === "number");
+        if (!amtCol) return s;
+        return s + customRows.reduce((rs, r) => rs + (parseFloat(r.cells[amtCol.id]) || 0), 0);
+      }, 0);
+    }
+    return sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + r.amount, 0), 0);
+  }, [sections, billFormat]);
+
   const balance = total - billDetails.advance;
   const multipleTables = sections.length > 1;
   const showAdvance = billDetails.showAdvance !== false;
@@ -231,7 +437,7 @@ export function BillPreview({ header, sections, billDetails, columnLabels }: Pro
             {showBreak && (
               <div className="pbPageBreakMark"><span>Page {thisPage}</span></div>
             )}
-            <SectionTable section={section} cols={cols} />
+            <SectionTable section={section} cols={cols} billFormat={billFormat} />
           </Fragment>
         );
       })}
