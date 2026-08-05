@@ -7,7 +7,7 @@ import { HeaderEditor } from "./components/HeaderEditor";
 import { BillTableEditor } from "./components/BillTableEditor";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader } from "./data/initialBill";
-import { money, parseSize, toTitleCase, convertInchesToFeet } from "./lib/billMath";
+import { money, parseSize, toTitleCase, convertInchesToFeet, convertInchesToFeetDisplay } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
 import { encodeBillMarker, extractBillFromPdf } from "./lib/billFile";
@@ -362,9 +362,9 @@ export function App() {
           // auto-calculate quantity — let the user type it manually.
           const hasUnit = /[a-zA-Z]/.test(next.size.replace(/[x×]/gi, ""));
           if (!hasUnit && next.size.trim()) {
-            const raw = parseSize(next.size, applyInch, rowMode);
-            // Round quantity to 2 decimal places (matches paper/Excel behavior).
-            next.quantity = Math.round(raw * 100) / 100;
+            // Keep full precision for accurate calculation.
+            // Display rounding happens only in the UI/PDF, not in the stored value.
+            next.quantity = parseSize(next.size, applyInch, rowMode);
           }
           // If size is empty, reset quantity to 1 (default).
           if (!next.size.trim()) {
@@ -917,7 +917,7 @@ export function App() {
                             const rowMode = row.mode ?? (isManual ? "manual" : "template");
                             const rowIsManual = rowMode === "manual";
                             const rowIsInches = rowMode === "inches";
-                            const converted = rowIsManual ? row.size : rowIsInches ? convertInchesToFeet(row.size) : convertAllPointValues(row.size);
+                            const converted = rowIsManual ? row.size : rowIsInches ? convertInchesToFeetDisplay(row.size) : convertAllPointValues(row.size);
                             const parsed = parseSize(row.size, rowMode === "template", rowMode);
                             const changed = !rowIsManual && converted !== row.size;
                             return (
@@ -956,7 +956,7 @@ export function App() {
                             style={{ textAlign: "right" }}
                             type="number"
                             min={0}
-                            value={row.quantity || ""}
+                            value={row.quantity ? Math.round(row.quantity * 100) / 100 : ""}
                             onChange={e => updateRow(section.id, row.id, "quantity", parseFloat(e.target.value) || 0)}
                             placeholder="0"
                             onFocus={select}

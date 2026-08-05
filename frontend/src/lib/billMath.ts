@@ -285,12 +285,30 @@ function evaluateArithmetic(expr: string): number | null {
 // followed by " by 12, then evaluate the resulting expression.
 // Example: "81\" x 48\"" → "6.75 x 4" → 27
 export function convertInchesToFeet(size: string): string {
-  // Replace each number followed by " (inch mark) with number/12
+  // Replace each number followed by " (inch mark) with number/12, rounded to
+  // 2 decimal places — matches Excel behavior for multi-dimension products.
+  // For single-number sizes (no multiplication), the full precision quantity is
+  // preserved by parseSize since the arithmetic parser handles it directly.
   return size.replace(/(\d+(?:\.\d+)?)\s*["″'']/g, (_match, num) => {
     const feet = parseFloat(num) / 12;
-    // Round to 4 decimal places to avoid float noise
-    return String(Math.round(feet * 10000) / 10000);
+    // Check if this is a standalone value (no x/× in the original string nearby).
+    // If so, keep higher precision so amount calculation is accurate.
+    // Otherwise round to 2 decimals (Excel's dimension-rounding behavior).
+    return String(Math.round(feet * 100) / 100);
   });
+}
+
+// For single-inch values (like "190""), keep full precision for accurate amount.
+export function convertInchesToFeetFull(size: string): string {
+  return size.replace(/(\d+(?:\.\d+)?)\s*["″'']/g, (_match, num) => {
+    const feet = parseFloat(num) / 12;
+    return String(feet);
+  });
+}
+
+// Display-friendly version (same rounding for the hint text).
+export function convertInchesToFeetDisplay(size: string): string {
+  return convertInchesToFeet(size);
 }
 
 export function parseSize(size: string, applyInchConversion: boolean = true, mode?: "template" | "manual" | "inches"): number {
@@ -323,7 +341,10 @@ export function parseSize(size: string, applyInchConversion: boolean = true, mod
   // In inches mode, convert numbers with " to feet first (÷12).
   let converted: string;
   if (mode === "inches") {
-    converted = convertInchesToFeet(clean);
+    // For multiplication expressions (has x/×), round each dimension to 2 decimals
+    // before multiplying (Excel behavior). For single values, keep full precision.
+    const hasMultiplication = /[x×*]/i.test(clean);
+    converted = hasMultiplication ? convertInchesToFeet(clean) : convertInchesToFeetFull(clean);
   } else {
     converted = applyInchConversion ? convertAllPointValues(clean) : clean;
   }
