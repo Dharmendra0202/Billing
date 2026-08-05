@@ -281,12 +281,52 @@ function evaluateArithmetic(expr: string): number | null {
   return Number.isFinite(result) ? result : null;
 }
 
-export function parseSize(size: string, applyInchConversion: boolean = true): number {
+// Convert inch-marked values (e.g. 81" x 48") to feet by dividing each number
+// followed by " by 12, then evaluate the resulting expression.
+// Example: "81\" x 48\"" → "6.75 x 4" → 27
+export function convertInchesToFeet(size: string): string {
+  // Replace each number followed by " (inch mark) with number/12
+  return size.replace(/(\d+(?:\.\d+)?)\s*["″'']/g, (_match, num) => {
+    const feet = parseFloat(num) / 12;
+    // Round to 4 decimal places to avoid float noise
+    return String(Math.round(feet * 10000) / 10000);
+  });
+}
+
+export function parseSize(size: string, applyInchConversion: boolean = true, mode?: "template" | "manual" | "inches"): number {
   const clean = size.trim();
   if (!clean) return 1;
 
+  // Handle units: RFT (running feet) → divide by 12 to get feet.
+  // NOS/PCS/NO → just extract the number as-is.
+  const rftMatch = clean.match(/^([\d.+\-*/x×()\s]+)\s*RFT$/i);
+  if (rftMatch) {
+    const numStr = rftMatch[1].trim()
+      .replace(/[x×]/gi, '*')
+      .replace(/[^0-9+\-*/().\s]/g, '')
+      .trim();
+    const val = evaluateArithmetic(numStr);
+    return val !== null ? val / 12 : (parseFloat(numStr) || 1) / 12;
+  }
+
+  const nosMatch = clean.match(/^([\d.+\-*/x×()\s]+)\s*(?:NOS|PCS|NO|Nos|Pcs|No)$/i);
+  if (nosMatch) {
+    const numStr = nosMatch[1].trim()
+      .replace(/[x×]/gi, '*')
+      .replace(/[^0-9+\-*/().\s]/g, '')
+      .trim();
+    const val = evaluateArithmetic(numStr);
+    return val !== null ? val : (parseFloat(numStr) || 1);
+  }
+
   // Convert point notation values first (e.g. 5.6 -> 5.50) — only in template mode.
-  const converted = applyInchConversion ? convertAllPointValues(clean) : clean;
+  // In inches mode, convert numbers with " to feet first (÷12).
+  let converted: string;
+  if (mode === "inches") {
+    converted = convertInchesToFeet(clean);
+  } else {
+    converted = applyInchConversion ? convertAllPointValues(clean) : clean;
+  }
 
   // Replace multiplication characters with standard *
   const sanitized = converted

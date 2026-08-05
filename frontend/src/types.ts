@@ -68,7 +68,7 @@ export type BillTable = {
   page?: number;
   // "template" | "manual" — controls whether size values are shown with inch
   // conversion in exports. Default "template".
-  mode?: "template" | "manual";
+  mode?: "template" | "manual" | "inches";
 };
 
 // Bill details that change per bill
@@ -111,9 +111,9 @@ export type EditorRow = {
   bold?: boolean;
   fontSize?: number;
   align?: "left" | "center" | "right";
-  // Per-row override for template/manual mode. When set, overrides the table's mode.
+  // Per-row override for template/manual/inches mode. When set, overrides the table's mode.
   // undefined = inherit from the table's mode (default behavior).
-  mode?: "template" | "manual";
+  mode?: "template" | "manual" | "inches";
 };
 
 export type BillFormat = "standard" | "labourMaterial" | "custom";
@@ -130,8 +130,9 @@ export type BillSection = {
   customRows?: BillRow[];
   // "template" = apply inch-conversion chart to sizes (e.g. .6 → .50)
   // "manual"   = treat sizes as plain decimals / math (no conversion)
+  // "inches"   = numbers followed by " are divided by 12 (inches → feet) before multiplication
   // Defaults to "template" when missing (backward compatible).
-  mode?: "template" | "manual";
+  mode?: "template" | "manual" | "inches";
   // Which page this table prints on. Tables sharing a number group on the same
   // page; a higher number than the previous table starts a new page. Default 1.
   page?: number;

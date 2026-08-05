@@ -372,33 +372,29 @@ RULES:
   }
 
   async extractBillFromImage(imageBase64: string): Promise<string> {
-    const extractionPrompt = `You are a bill/invoice data extraction expert. Carefully read the bill image and extract all table rows.
+    const extractionPrompt = `You are a bill/invoice data extraction expert. Carefully read this bill image (it may be handwritten on paper or a printed document) and extract ALL rows.
 
-The table may have columns like:
-- Item / Particulars / Description (the item name)
-- Size (measurements like "4.75 × 4.25", "2.75 × 4.0", or empty/dash if not present)
-- Quantity / Area / Qty (a numeric value, possibly with a unit like "Sq.ft", "RFT", "No", "Nos", "Pcs" — extract ONLY the number, strip the unit)
+The bill typically has these columns:
+- Particulars / Item name (the work or material description)
+- Size (measurements like "4.4 x 6.8", "6.6 x 5.5", "2.8 x 8.3", "80 RFT" — or blank/dash if not present)
+- Quantity (numeric: the calculated area/qty from size, or a direct number)
 - Rate (price per unit — a number)
-- Amount / Total (total for that row — a number)
+- Amount (total for that row — a number, usually Quantity × Rate)
+
+For handwritten bills: the format is often "Item  Size = Quantity × Rate = Amount" on each line.
 
 Rules:
-1. Extract EVERY row you can see. Do not skip any.
-2. For "particulars": use the exact item name/description text from the image.
-3. For "size": use the exact measurement string (e.g. "4.75 x 4.25"). If it shows a dash "—" or is blank, use "".
-4. For "quantity": extract ONLY the numeric value. Strip any units like Sq.ft, RFT, No, Nos, Pcs. Examples: "20.18 Sq.ft" → 20.18, "4.66 RFT" → 4.66, "1 No" → 1, "3" → 3.
-5. For "rate": a clean number.
-6. For "amount": a clean number.
-7. sr starts at 1 and increments for each row.
+1. Extract EVERY single row/line item you can read. Do NOT skip any.
+2. "particulars": the item name exactly as written (e.g. "Loft", "Cot", "Dressing", "Head Board", "AC Panel", "Door Frame", "Painting Works").
+3. "size": the measurement string (e.g. "4.4 x 6.8", "1.10 x 6.8", "6.6 x 6.5"). If blank or "—" or "LS", use "".
+4. "quantity": ONLY the numeric value (no units). Examples: "28.77" from "= 28.77 ×", or "1" if it says "1 NOS" or "LS".
+5. "rate": clean number (e.g. 350, 525, 275, 475, 150, 300).
+6. "amount": clean number (the final amount for that row).
+7. If a row says "LS" or "Lump Sum", set size to "LS", quantity to 1, rate to the amount.
+8. sr starts at 1 and increments.
 
-You MUST return ONLY valid JSON in this EXACT format with the "items" key — no other text, no markdown:
-{
-  "items": [
-    { "sr": 1, "particulars": "Mirror Panel", "size": "4.75 x 4.25", "quantity": 20.18, "rate": 275, "amount": 5549.50 },
-    { "sr": 2, "particulars": "Entry Drawer", "size": "", "quantity": 1, "rate": 1500, "amount": 1500 }
-  ],
-  "total": 7049.50,
-  "advance": 0
-}`;
+Return ONLY valid JSON — no explanation, no markdown fences. Use this exact format:
+{"items":[{"sr":1,"particulars":"Loft","size":"4.4 x 6.8","quantity":28.77,"rate":350,"amount":10069},{"sr":2,"particulars":"Cot","size":"6.8 x 4.4","quantity":28.77,"rate":525,"amount":15104}]}`;
 
     return this.analyzeImage(imageBase64, extractionPrompt);
   }

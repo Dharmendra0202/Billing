@@ -7,7 +7,7 @@ import { HeaderEditor } from "./components/HeaderEditor";
 import { BillTableEditor } from "./components/BillTableEditor";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader } from "./data/initialBill";
-import { money, parseSize, toTitleCase } from "./lib/billMath";
+import { money, parseSize, toTitleCase, convertInchesToFeet } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
 import { encodeBillMarker, extractBillFromPdf } from "./lib/billFile";
@@ -357,8 +357,19 @@ export function App() {
         if (field === "size") {
           // Per-row mode overrides the table's mode.
           const rowMode = next.mode ?? tableMode;
-          const applyInch = rowMode !== "manual";
-          next.quantity = parseSize(next.size, applyInch);
+          const applyInch = rowMode === "template";
+          // If the size contains unit text (RFT, NOS, PCS, LS, etc.), don't
+          // auto-calculate quantity — let the user type it manually.
+          const hasUnit = /[a-zA-Z]/.test(next.size.replace(/[x×]/gi, ""));
+          if (!hasUnit && next.size.trim()) {
+            const raw = parseSize(next.size, applyInch, rowMode);
+            // Round quantity to 2 decimal places (matches paper/Excel behavior).
+            next.quantity = Math.round(raw * 100) / 100;
+          }
+          // If size is empty, reset quantity to 1 (default).
+          if (!next.size.trim()) {
+            next.quantity = 1;
+          }
         }
         return next;
       });
@@ -905,23 +916,27 @@ export function App() {
                           {(() => {
                             const rowMode = row.mode ?? (isManual ? "manual" : "template");
                             const rowIsManual = rowMode === "manual";
-                            const converted = rowIsManual ? row.size : convertAllPointValues(row.size);
-                            const parsed = parseSize(row.size, !rowIsManual);
+                            const rowIsInches = rowMode === "inches";
+                            const converted = rowIsManual ? row.size : rowIsInches ? convertInchesToFeet(row.size) : convertAllPointValues(row.size);
+                            const parsed = parseSize(row.size, rowMode === "template", rowMode);
                             const changed = !rowIsManual && converted !== row.size;
                             return (
                               <div className="sizeRowControls">
                                 <button
-                                  className={`rowModeBtn ${rowIsManual ? "manual" : "template"}`}
+                                  className={`rowModeBtn ${rowIsManual ? "manual" : rowMode === "inches" ? "inches" : "template"}`}
                                   onClick={() => {
                                     const currentMode = row.mode ?? (isManual ? "manual" : "template");
-                                    const nextMode = currentMode === "manual" ? "template" : "manual";
+                                    // Cycle: template → manual → inches → template
+                                    const nextMode = currentMode === "template" ? "manual" : currentMode === "manual" ? "inches" : "template";
                                     updateRow(section.id, row.id, "mode", nextMode);
                                   }}
                                   title={rowIsManual
-                                    ? "This row: Manual (plain math). Click → Template (inch chart)."
+                                    ? "This row: Manual (plain math). Click → Inches (÷12)."
+                                    : rowMode === "inches"
+                                    ? "This row: Inches (81\" → 6.75). Click → Template (inch chart)."
                                     : "This row: Template (inch chart). Click → Manual (plain math)."}
                                 >
-                                  {rowIsManual ? "M" : "T"}
+                                  {rowIsManual ? "M" : rowMode === "inches" ? "I" : "T"}
                                 </button>
                                 {row.size.trim() && (
                                   <small className="sizeHint">

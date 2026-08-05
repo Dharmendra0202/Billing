@@ -1923,3 +1923,9 @@ input:focus, textarea:focus, select:focus {
   color: #15803d;
 }
 .rowModeBtn:hover { opacity: 0.8; }
+
+.rowModeBtn.inches {
+  background: #fef3c7;
+  border-color: #fbbf24;
+  color: #92400e;
+}
