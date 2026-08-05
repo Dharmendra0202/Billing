@@ -11,8 +11,8 @@ import { money, parseSize, toTitleCase } from "./lib/billMath";
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
 import { encodeBillMarker, extractBillFromPdf } from "./lib/billFile";
-import { defaultColumnLabels } from "./types";
-import type { BillDetails, BillSection, BillTable, ColumnLabels, EditorRow, HeaderTemplate, BillFormat, BillColumn, BillRow } from "./types";
+import { defaultColumnLabels, defaultColumnVisibility } from "./types";
+import type { BillDetails, BillSection, BillTable, ColumnLabels, ColumnVisibility, EditorRow, HeaderTemplate, BillFormat, BillColumn, BillRow } from "./types";
 
 // Convert a single section's editor rows → BillTable for export
 function sectionToBillTable(section: BillSection, format: BillFormat = "standard"): BillTable {
@@ -159,6 +159,7 @@ export function App() {
     if (saved) { try { return { ...defaultColumnLabels, ...JSON.parse(saved) }; } catch { /* ignore */ } }
     return defaultColumnLabels;
   });
+  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibility>(defaultColumnVisibility);
 
   // ── Autosave ────────────────────────────────────────────────────────────────
   // Persist every change immediately so a page refresh (or accidental reload)
@@ -419,7 +420,7 @@ export function App() {
     const exportTables = currentBillTables;
     if (format === "pdf") {
       // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
-      const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels, billFormat });
+      const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels, billFormat, columnVisibility });
       await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat }, columnLabels);
     }
     else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
@@ -444,6 +445,10 @@ export function App() {
       setSections(data.sections as BillSection[]);
       setBillTitle(typeof data.billTitle === "string" ? data.billTitle : "Untitled Bill");
       setColumnLabels({ ...defaultColumnLabels, ...(data.columnLabels ?? {}) });
+      if (data.billFormat === "labourMaterial" || data.billFormat === "standard") {
+        setBillFormat(data.billFormat);
+      }
+      setColumnVisibility({ ...defaultColumnVisibility, ...(data.columnVisibility ?? {}) });
       setSelectedCell(null);
     } catch {
       alert("Could not read this PDF. Please make sure it's a bill PDF exported from this app.");
@@ -639,6 +644,31 @@ export function App() {
               </label>
             </div>
 
+            {/* Column Visibility */}
+            <div className="card">
+              <div className="cardHeader">
+                <span className="cardTitle">Columns (show/hide)</span>
+              </div>
+              <label className="toggleRow">
+                <input type="checkbox" checked={columnVisibility.size} onChange={e => setColumnVisibility(v => ({ ...v, size: e.target.checked }))} />
+                {columnLabels.size}
+              </label>
+              <label className="toggleRow">
+                <input type="checkbox" checked={columnVisibility.quantity} onChange={e => setColumnVisibility(v => ({ ...v, quantity: e.target.checked }))} />
+                {columnLabels.quantity}
+              </label>
+              {billFormat === "standard" && (
+                <label className="toggleRow">
+                  <input type="checkbox" checked={columnVisibility.rate} onChange={e => setColumnVisibility(v => ({ ...v, rate: e.target.checked }))} />
+                  {columnLabels.rate}
+                </label>
+              )}
+              <label className="toggleRow">
+                <input type="checkbox" checked={columnVisibility.amount} onChange={e => setColumnVisibility(v => ({ ...v, amount: e.target.checked }))} />
+                {columnLabels.amount}
+              </label>
+            </div>
+
             {/* Cloud Db & Open PDF section */}
             <div className="card">
               <div className="cardHeader">
@@ -818,12 +848,12 @@ export function App() {
                   <tr>
                     <th style={{ width: 44 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.sr} onChange={e => updateColumnLabel("sr", e.target.value)} title="Click to rename this column" /></th>
                     <th><input className="colHeaderInput" value={columnLabels.particulars} onChange={e => updateColumnLabel("particulars", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: billFormat === "labourMaterial" ? 90 : 120 }}><input className="colHeaderInput" value={columnLabels.size} onChange={e => updateColumnLabel("size", e.target.value)} title="Click to rename this column" /></th>
-                    <th style={{ width: billFormat === "labourMaterial" ? 75 : 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>
+                    {columnVisibility.size && <th style={{ width: billFormat === "labourMaterial" ? 90 : 120 }}><input className="colHeaderInput" value={columnLabels.size} onChange={e => updateColumnLabel("size", e.target.value)} title="Click to rename this column" /></th>}
+                    {columnVisibility.quantity && <th style={{ width: billFormat === "labourMaterial" ? 75 : 100 }}><input className="colHeaderInput" style={{ textAlign: "right" }} value={columnLabels.quantity} onChange={e => updateColumnLabel("quantity", e.target.value)} title="Click to rename this column" /></th>}
                     {billFormat === "standard" ? (
                       <>
-                        <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.rate} onChange={e => updateColumnLabel("rate", e.target.value)} title="Click to rename this column" /></th>
-                        <th style={{ width: 110 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.amount} onChange={e => updateColumnLabel("amount", e.target.value)} title="Click to rename this column" /></th>
+                        {columnVisibility.rate && <th style={{ width: 100 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.rate} onChange={e => updateColumnLabel("rate", e.target.value)} title="Click to rename this column" /></th>}
+                        {columnVisibility.amount && <th style={{ width: 110 }}><input className="colHeaderInput" style={{ textAlign: "center" }} value={columnLabels.amount} onChange={e => updateColumnLabel("amount", e.target.value)} title="Click to rename this column" /></th>}
                       </>
                     ) : (
                       <>
@@ -863,6 +893,7 @@ export function App() {
                             }}
                           />
                         </td>
+                        {columnVisibility.size && (
                         <td>
                           <input
                             className="billCell"
@@ -902,6 +933,8 @@ export function App() {
                             );
                           })()}
                         </td>
+                        )}
+                        {columnVisibility.quantity && (
                         <td className="tdRight">
                           <input
                             className="billCell"
@@ -914,8 +947,10 @@ export function App() {
                             onFocus={select}
                           />
                         </td>
+                        )}
                         {billFormat === "standard" ? (
                           <>
+                            {columnVisibility.rate && (
                             <td className="tdCenter">
                               <input
                                 className="billCell"
@@ -928,6 +963,8 @@ export function App() {
                                 onFocus={select}
                               />
                             </td>
+                            )}
+                            {columnVisibility.amount && (
                             <td className="tdAmount">
                               <input
                                 className="billCell"
@@ -940,6 +977,7 @@ export function App() {
                                 onFocus={select}
                               />
                             </td>
+                            )}
                           </>
                         ) : (
                           <>

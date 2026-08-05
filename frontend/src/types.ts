@@ -27,6 +27,24 @@ export type ColumnLabels = {
   amount: string;
 };
 
+export type ColumnVisibility = {
+  sr: boolean;
+  particulars: boolean;
+  size: boolean;
+  quantity: boolean;
+  rate: boolean;
+  amount: boolean;
+};
+
+export const defaultColumnVisibility: ColumnVisibility = {
+  sr: true,
+  particulars: true,
+  size: true,
+  quantity: true,
+  rate: true,
+  amount: true
+};
+
 export const defaultColumnLabels: ColumnLabels = {
   sr: "Sr. No",
   particulars: "Particulars",
