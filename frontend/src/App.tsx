@@ -1,5 +1,5 @@
 import { FileSpreadsheet, FileText, FilePlus2, RotateCcw, Save, Scan, Database, Plus, Trash2, Ruler, Calculator, CheckCircle2, Loader2, SeparatorHorizontal, FolderOpen, PanelLeft } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AIChat } from "./components/AIChat";
 import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
@@ -81,7 +81,8 @@ function sectionToBillTable(section: BillSection, format: BillFormat = "standard
         bold:            String(r.bold || false),
         fontSize:        String(r.fontSize || 11),
         align:           r.align || "left",
-        mode:            r.mode || ""
+        mode:            r.mode || "",
+        subRows:         JSON.stringify(r.subRows || [])
       }
     }))
   };
@@ -89,9 +90,17 @@ function sectionToBillTable(section: BillSection, format: BillFormat = "standard
 
 function recalc(rows: EditorRow[], format: BillFormat = "standard"): EditorRow[] {
   return rows.map((r, i) => {
-    const amt = Math.round(r.quantity * r.rate * 100) / 100;
-    const labourAmt = Math.round(r.quantity * (r.labourRate || 0) * 100) / 100;
-    const materialAmt = Math.round(r.quantity * (r.materialRate || 0) * 100) / 100;
+    // If the row has sub-rows, the total quantity is the sum of the main size +
+    // all sub-row sizes. Each sub-row's size is parsed with the row's mode.
+    let qty = r.quantity;
+    if (r.subRows && r.subRows.length > 0) {
+      // Don't override: quantity is computed in updateRow when size changes.
+      // Here we just ensure amount uses the stored quantity.
+      qty = r.quantity;
+    }
+    const amt = Math.round(qty * r.rate * 100) / 100;
+    const labourAmt = Math.round(qty * (r.labourRate || 0) * 100) / 100;
+    const materialAmt = Math.round(qty * (r.materialRate || 0) * 100) / 100;
     return {
       ...r,
       sr: i + 1,
@@ -136,15 +145,27 @@ function loadInitialSections(): BillSection[] {
 type SelectedCell = { sectionId: string; rowId: string } | null;
 
 export function App() {
-  const [header, setHeader] = useState<HeaderTemplate>(initialHeader);
+  const [header, setHeader] = useState<HeaderTemplate>(() => {
+    const saved = localStorage.getItem("bill.header");
+    return saved ? JSON.parse(saved) : initialHeader;
+  });
 
-  const [billDetails, setBillDetails] = useState<BillDetails>(initialBillDetails);
+  const [billDetails, setBillDetails] = useState<BillDetails>(() => {
+    const saved = localStorage.getItem("bill.details");
+    return saved ? JSON.parse(saved) : initialBillDetails;
+  });
 
-  const [billFormat, setBillFormat] = useState<BillFormat>("standard");
+  const [billFormat, setBillFormat] = useState<BillFormat>(() => {
+    return (localStorage.getItem("bill.format") as BillFormat) || "standard";
+  });
 
-  const [sections, setSections] = useState<BillSection[]>(defaultSections);
+  const [sections, setSections] = useState<BillSection[]>(() => {
+    const saved = localStorage.getItem("bill.sections");
+    if (saved) { try { const p = JSON.parse(saved); if (Array.isArray(p) && p.length) return p; } catch {} }
+    return defaultSections();
+  });
 
-  const [billTitle, setBillTitle] = useState("New Bill");
+  const [billTitle, setBillTitle] = useState(() => localStorage.getItem("bill.title") || "New Bill");
   const [leftTab, setLeftTab] = useState<"details" | "scanner">("details");
   const [isLeftDrawerOpen, setIsLeftDrawerOpen] = useState(false);
   const [dbPanelOpen, setDbPanelOpen] = useState(false);
@@ -168,7 +189,15 @@ export function App() {
     setColumnLabels(prev => ({ ...prev, [key]: value }));
   };
 
-  // Visual feedback only (no persistent autosave — app always starts fresh).
+  // ── Autosave: persist every change so refresh never loses data ──────────────
+  useEffect(() => { localStorage.setItem("bill.header", JSON.stringify(header)); }, [header]);
+  useEffect(() => { localStorage.setItem("bill.details", JSON.stringify(billDetails)); }, [billDetails]);
+  useEffect(() => { localStorage.setItem("bill.sections", JSON.stringify(sections)); }, [sections]);
+  useEffect(() => { localStorage.setItem("bill.title", billTitle); }, [billTitle]);
+  useEffect(() => { localStorage.setItem("bill.format", billFormat); }, [billFormat]);
+  useEffect(() => { localStorage.setItem("bill.columns", JSON.stringify(columnLabels)); }, [columnLabels]);
+
+  // Visual feedback
   const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
   useEffect(() => {
     setSaveState("saving");
@@ -362,12 +391,21 @@ export function App() {
           // auto-calculate quantity — let the user type it manually.
           const hasUnit = /[a-zA-Z]/.test(next.size.replace(/[x×]/gi, ""));
           if (!hasUnit && next.size.trim()) {
-            // Keep full precision for accurate calculation.
-            // Display rounding happens only in the UI/PDF, not in the stored value.
-            next.quantity = parseSize(next.size, applyInch, rowMode);
+            if (next.subRows && next.subRows.length > 0) {
+              // Has sub-rows: quantity = sum of main + all sub-row sizes.
+              const mainQty = parseSize(next.size, applyInch, rowMode);
+              const subQty = next.subRows.reduce((sum, sub) => {
+                const hasUnitSub = /[a-zA-Z]/.test(sub.size.replace(/[x×]/gi, ""));
+                if (hasUnitSub || !sub.size.trim()) return sum;
+                return sum + parseSize(sub.size, applyInch, rowMode);
+              }, 0);
+              next.quantity = mainQty + subQty;
+            } else {
+              next.quantity = parseSize(next.size, applyInch, rowMode);
+            }
           }
-          // If size is empty, reset quantity to 1 (default).
-          if (!next.size.trim()) {
+          // If size is empty and no sub-rows, reset quantity to 1 (default).
+          if (!next.size.trim() && (!next.subRows || next.subRows.length === 0)) {
             next.quantity = 1;
           }
         }
@@ -376,6 +414,61 @@ export function App() {
       if (field === "amount") return updated.map((r, i) => ({ ...r, sr: i + 1 }));
       return recalc(updated, billFormat);
     });
+  };
+
+  // ── Sub-row (merge) operations ────────────────────────────────────────────────
+  // Add a sub-row to a parent row (for grouped sizes that share one Qty×Rate=Amt).
+  const addSubRow = (sectionId: string, rowId: string) => {
+    updateSectionRows(sectionId, rows => rows.map(r => {
+      if (r.id !== rowId) return r;
+      const sub = { id: uid(), particulars: "", size: "" };
+      return { ...r, subRows: [...(r.subRows || []), sub] };
+    }));
+  };
+
+  const deleteSubRow = (sectionId: string, rowId: string, subRowId: string) => {
+    updateSectionRows(sectionId, rows => {
+      const updated = rows.map(r => {
+        if (r.id !== rowId) return r;
+        const subRows = (r.subRows || []).filter(s => s.id !== subRowId);
+        return { ...r, subRows };
+      });
+      // Recompute the parent row's quantity from main size + remaining sub-rows.
+      return recalcSubRowQuantity(updated, rowId, sectionId);
+    });
+  };
+
+  const updateSubRow = (sectionId: string, rowId: string, subRowId: string, field: "particulars" | "size", value: string) => {
+    updateSectionRows(sectionId, rows => {
+      const updated = rows.map(r => {
+        if (r.id !== rowId) return r;
+        const subRows = (r.subRows || []).map(s => s.id === subRowId ? { ...s, [field]: value } : s);
+        return { ...r, subRows };
+      });
+      if (field === "size") {
+        return recalcSubRowQuantity(updated, rowId, sectionId);
+      }
+      return updated;
+    });
+  };
+
+  // Recompute a row's quantity as sum of main size + all sub-row sizes.
+  const recalcSubRowQuantity = (rows: EditorRow[], rowId: string, sectionId: string): EditorRow[] => {
+    const section = sections.find(s => s.id === sectionId);
+    const tableMode = section?.mode ?? "template";
+    return recalc(rows.map(r => {
+      if (r.id !== rowId) return r;
+      const rowMode = r.mode ?? tableMode;
+      const applyInch = rowMode === "template";
+      const hasUnitMain = /[a-zA-Z]/.test(r.size.replace(/[x×]/gi, ""));
+      const mainQty = (!hasUnitMain && r.size.trim()) ? parseSize(r.size, applyInch, rowMode) : 0;
+      const subQty = (r.subRows || []).reduce((sum, sub) => {
+        const hasUnit = /[a-zA-Z]/.test(sub.size.replace(/[x×]/gi, ""));
+        if (hasUnit || !sub.size.trim()) return sum;
+        return sum + parseSize(sub.size, applyInch, rowMode);
+      }, 0);
+      return { ...r, quantity: mainQty + subQty };
+    }), billFormat);
   };
 
   // ── Row formatting (operates on the currently selected cell) ────────────────
@@ -882,7 +975,8 @@ export function App() {
                     const isSelected = selectedCell?.sectionId === section.id && selectedCell?.rowId === row.id;
                     const select = () => setSelectedCell({ sectionId: section.id, rowId: row.id });
                     return (
-                      <tr key={row.id} style={{ background: isSelected ? "#f8fafc" : undefined }}>
+                      <React.Fragment key={row.id}>
+                      <tr style={{ background: isSelected ? "#f8fafc" : undefined }}>
                         <td className="tdCenter">
                           <input className="billCell" style={{ width: 36, textAlign: "center" }} value={row.sr} readOnly tabIndex={-1} onFocus={select} />
                         </td>
@@ -950,7 +1044,7 @@ export function App() {
                         </td>
                         )}
                         {columnVisibility.quantity && (
-                        <td className="tdRight">
+                        <td className="tdRight" rowSpan={1 + (row.subRows?.length || 0)} style={{ verticalAlign: "middle" }}>
                           <input
                             className="billCell"
                             style={{ textAlign: "right" }}
@@ -966,7 +1060,7 @@ export function App() {
                         {billFormat === "standard" ? (
                           <>
                             {columnVisibility.rate && (
-                            <td className="tdCenter">
+                            <td className="tdCenter" rowSpan={1 + (row.subRows?.length || 0)} style={{ verticalAlign: "middle" }}>
                               <input
                                 className="billCell"
                                 style={{ textAlign: "center" }}
@@ -980,7 +1074,7 @@ export function App() {
                             </td>
                             )}
                             {columnVisibility.amount && (
-                            <td className="tdAmount">
+                            <td className="tdAmount" rowSpan={1 + (row.subRows?.length || 0)} style={{ verticalAlign: "middle" }}>
                               <input
                                 className="billCell"
                                 style={{ textAlign: "center", background: "transparent" }}
@@ -1046,8 +1140,14 @@ export function App() {
                             </td>
                           </>
                         )}
-                        <td>
+                        <td rowSpan={1 + (row.subRows?.length || 0)} style={{ verticalAlign: "middle" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                            <button
+                              className="miniButton"
+                              title="Add sub-row (merge multiple sizes into one quantity)"
+                              onClick={() => addSubRow(section.id, row.id)}
+                              style={{ fontSize: 13, border: "none", color: "#7c3aed" }}
+                            >⊞</button>
                             <button
                               className="miniButton"
                               title="Insert row below"
@@ -1063,6 +1163,42 @@ export function App() {
                           </div>
                         </td>
                       </tr>
+                      {/* Sub-rows (merged sizes contributing to this row's quantity) */}
+                      {(row.subRows || []).map(sub => (
+                        <tr key={sub.id} style={{ background: "#faf5ff" }}>
+                          <td></td>
+                          <td>
+                            <input
+                              className="billCell"
+                              value={sub.particulars}
+                              onChange={e => updateSubRow(section.id, row.id, sub.id, "particulars", e.target.value)}
+                              placeholder="Sub-item…"
+                              style={{ fontSize: "12px", color: "#6b21a8" }}
+                            />
+                          </td>
+                          {columnVisibility.size && (
+                          <td>
+                            <input
+                              className="billCell"
+                              value={sub.size}
+                              onChange={e => updateSubRow(section.id, row.id, sub.id, "size", e.target.value)}
+                              placeholder="Size…"
+                              style={{ fontSize: "12px" }}
+                            />
+                          </td>
+                          )}
+                          {/* No Qty/Rate/Amt cells — they are rowSpan'd from the parent row */}
+                          <td>
+                            <button
+                              className="miniButton danger"
+                              title="Remove sub-row"
+                              onClick={() => deleteSubRow(section.id, row.id, sub.id)}
+                              style={{ fontSize: 14, border: "none" }}
+                            >×</button>
+                          </td>
+                        </tr>
+                      ))}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>

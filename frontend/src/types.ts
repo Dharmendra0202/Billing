@@ -114,6 +114,16 @@ export type EditorRow = {
   // Per-row override for template/manual/inches mode. When set, overrides the table's mode.
   // undefined = inherit from the table's mode (default behavior).
   mode?: "template" | "manual" | "inches";
+  // Sub-rows: additional size lines that contribute to this row's total quantity.
+  // The main row's `size` is the first line; subRows hold additional lines.
+  // Total quantity = parseSize(size) + sum(parseSize(each subRow.size))
+  subRows?: SubRow[];
+};
+
+export type SubRow = {
+  id: string;
+  particulars: string; // optional sub-particulars (like "Marble Finish")
+  size: string;
 };
 
 export type BillFormat = "standard" | "labourMaterial" | "custom";

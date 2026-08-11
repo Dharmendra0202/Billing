@@ -766,9 +766,11 @@ input:focus, textarea:focus, select:focus {
 .pbContactLine { text-align: center; margin: 0; line-height: 1.1; }
 .pbTagline { text-align: center; margin: 2px 0 0 0; line-height: 1.2; }
 .pbDate { text-align: right; font-size: 11px; margin: 4px 0 2px; }
-.pbTo { font-size: 11px; margin: 4px 0 0 0; }
-.pbClientName { font-size: 12px; font-weight: bold; margin: 1px 0; }
-.pbClientAddr { font-size: 11px; margin: 1px 0 4px; white-space: pre-wrap; }
+.pbClient { line-height: 1.2; }
+.pbClient p { margin: 0; }
+.pbTo { font-size: 11px; margin: 4px 0 0 0; line-height: 1.1; }
+.pbClientName { font-size: 12px; font-weight: normal; margin: 0; line-height: 1.1; }
+.pbClientAddr { font-size: 11px; margin: 0 0 4px; white-space: pre-wrap; line-height: 1.1; }
 .pbSub { font-size: 11px; text-align: center; margin: 6px 0 8px; font-weight: bold; }
 
 .pbTable {

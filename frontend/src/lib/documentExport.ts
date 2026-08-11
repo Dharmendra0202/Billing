@@ -632,19 +632,19 @@ export async function exportProfessionalPDF(
 
   // Client Details
   if (billDetails.showClientDetails !== false) {
+    doc.setFontSize(11);
     doc.setFont("times", "normal");
     doc.text("To,", margin, yPos);
-    yPos += 6;
-    doc.setFont("times", "bold");
-    doc.text(billDetails.clientName || "________________", margin, yPos);
-    yPos += 6;
+    yPos += 3.8;
     doc.setFont("times", "normal");
+    doc.text(billDetails.clientName || "________________", margin, yPos);
+    yPos += 3.8;
     if (billDetails.showClientAddress !== false) {
       const addressLines = doc.splitTextToSize(billDetails.clientAddress || "________________", pageWidth - 2 * margin - 40);
       doc.text(addressLines, margin, yPos);
-      yPos += addressLines.length * 6;
+      yPos += addressLines.length * 3.8;
     } else {
-      yPos += 6;
+      yPos += 3.8;
     }
     yPos += 12;
   }
@@ -963,10 +963,35 @@ export async function exportProfessionalPDF(
       );
       const naturalHeight = Math.max(maxTextHeight + 2.5 * scale, minRowHeight * scale);
 
+      // Sub-rows (merged sizes)
+      let subRowsData: { particulars: string[]; size: string[]; height: number }[] = [];
+      let totalGroupHeight = naturalHeight;
+      try {
+        const subs = JSON.parse(row.cells.subRows || "[]") as { id: string; particulars: string; size: string }[];
+        if (subs.length > 0) {
+          doc.setFont("times", "normal");
+          doc.setFontSize(nfs);
+          subRowsData = subs.map(sub => {
+            const subPartLines = doc.splitTextToSize(sub.particulars || "", colWidths[1] - 4);
+            const subSizeRaw = sub.size || "";
+            const subSizeStr = (!isLSRow && applyInch && subSizeRaw) ? convertAllPointValues(subSizeRaw) : subSizeRaw;
+            const subSizeLines = subSizeStr ? doc.splitTextToSize(subSizeStr, colWidths[2] - 3) : [];
+            const subH = Math.max(
+              heightOf(subPartLines.length, nLineSpacing, nCapHeight),
+              heightOf(subSizeLines.length, nLineSpacing, nCapHeight)
+            );
+            const subRowHeight = Math.max(subH + 2.5 * scale, minRowHeight * scale);
+            return { particulars: subPartLines, size: subSizeLines, height: subRowHeight };
+          });
+          totalGroupHeight = naturalHeight + subRowsData.reduce((s, sr) => s + sr.height, 0);
+        }
+      } catch {}
+
       return {
         row, fontSize, isBold, align, isLS: isLSRow,
         lines, lineSpacing, capHeight, textHeight, maxTextHeight, naturalHeight,
-        srLines, sizeLines, qtyLines, rateLines, amtLines
+        srLines, sizeLines, qtyLines, rateLines, amtLines,
+        subRowsData, totalGroupHeight
       };
     });
 
@@ -977,7 +1002,7 @@ export async function exportProfessionalPDF(
     const rowsNaturalHeight = measured.reduce((h, m) => h + m.naturalHeight, 0);
     const naturalTableHeight = fixedHeight + rowsNaturalHeight;
 
-    let rowHeights = measured.map(m => m.naturalHeight);
+    let rowHeights = measured.map(m => m.totalGroupHeight);
     let compressed = false;
 
     if (fitMode) {
@@ -1056,8 +1081,13 @@ export async function exportProfessionalPDF(
       }
 
       const yTop = yPos;
-      // Vertically-centred baseline for a block of `n` lines at the given spacing.
+      const mainH = m.naturalHeight;
+      const hasSubRows = m.subRowsData.length > 0;
+      // For Sr/Particulars/Size: center within just the main row's height.
+      // For Qty/Rate/Amt: center within the full group height (merged look).
       const baselineFor = (n: number, lineSpacing: number, capHeight: number) =>
+        yTop + mainH / 2 - ((Math.max(n, 1) - 1) * lineSpacing) / 2 + capHeight / 2;
+      const baselineForGroup = (n: number, lineSpacing: number, capHeight: number) =>
         yTop + rowHeight / 2 - ((Math.max(n, 1) - 1) * lineSpacing) / 2 + capHeight / 2;
 
       if (isCustomFormat && table.columns && table.columns.length > 0) {
@@ -1088,10 +1118,10 @@ export async function exportProfessionalPDF(
         const amtCol = findCustomAmountCol(table.columns);
         subtotal += amtCol ? (parseFloat(m.row.cells[amtCol.id]) || 0) : 0;
       } else {
-        // Sr. No (normal font, centred, wraps if ever needed).
+        // Sr. No (centred across the full group height, like Qty/Rate/Amt)
         doc.setFont("times", "normal");
         doc.setFontSize(nfs);
-        doc.text(m.srLines, srCenterX, baselineFor(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        doc.text(m.srLines, srCenterX, baselineForGroup(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
         // Particulars (per-row font size / weight, honours row alignment).
         doc.setFont("times", m.isBold ? "bold" : "normal");
@@ -1111,33 +1141,64 @@ export async function exportProfessionalPDF(
         } else {
           const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
           doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
-          doc.text(m.qtyLines, qtyCenterX, baselineFor(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          doc.text(m.qtyLines, qtyCenterX, baselineForGroup(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
           if (isLabourFormat) {
             // Labour rate + amount, Material rate + amount
             const labourRate = parseFloat(m.row.cells.labourRate) || 0;
             const labourAmt = parseFloat(m.row.cells.labourAmount) || 0;
             const materialRate = parseFloat(m.row.cells.materialRate) || 0;
             const materialAmt = parseFloat(m.row.cells.materialAmount) || 0;
-            doc.text(labourRate > 0 ? pdfNumber(labourRate) : "\u2014", labourCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-            doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-            doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
-            doc.text(materialAmt > 0 ? pdfCurrency(materialAmt) : "\u2014", materialAmtCenterX, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(labourRate > 0 ? pdfNumber(labourRate) : "\u2014", labourCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(materialAmt > 0 ? pdfCurrency(materialAmt) : "\u2014", materialAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
           } else {
-            doc.text(m.rateLines, rateCenterX, baselineFor(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(m.rateLines, rateCenterX, baselineForGroup(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
           }
         }
         // Amount column (standard format only — labour format draws both amounts above).
         if (!isLabourFormat) {
-          doc.text(m.amtLines, amtCenterX, baselineFor(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          doc.text(m.amtLines, amtCenterX, baselineForGroup(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
         }
 
         subtotal += isLabourFormat ? (parseFloat(m.row.cells.materialAmount) || 0) : (parseFloat(m.row.cells.amount) || 0);
       }
 
-      yPos += rowHeight;
-      // Draw horizontal grid line below the row
-      doc.line(margin, yPos, pageWidth - margin, yPos);
-      // Vertical grid lines for this row (merged for LS rows)
+      // Draw the main row's height, then sub-rows below it.
+
+      if (hasSubRows) {
+        // Main row line: only across Sr + Particulars + Size (not Qty/Rate/Amt which are merged)
+        yPos += mainH;
+        doc.line(margin, yPos, verticalX[3], yPos);
+
+        // Draw each sub-row (particulars + size only)
+        doc.setFont("times", "normal");
+        doc.setFontSize(nfs);
+        m.subRowsData.forEach((sub, si) => {
+          const subTop = yPos;
+          const subBaseY = subTop + sub.height / 2 + nCapHeight / 2;
+          // Sub-row particulars
+          if (sub.particulars.length > 0 && sub.particulars[0]) {
+            doc.text(sub.particulars, colX[1], subBaseY, { align: "left" });
+          }
+          // Sub-row size
+          if (sub.size.length > 0) {
+            doc.text(sub.size, sizeCenterX, subBaseY, { align: "center" });
+          }
+          yPos += sub.height;
+          // Line after sub-row: full width for the last sub-row, partial for others
+          if (si === m.subRowsData.length - 1) {
+            doc.line(margin, yPos, pageWidth - margin, yPos);
+          } else {
+            doc.line(margin, yPos, verticalX[3], yPos);
+          }
+        });
+      } else {
+        yPos += rowHeight;
+        // Draw horizontal grid line below the row
+        doc.line(margin, yPos, pageWidth - margin, yPos);
+      }
+      // Vertical grid lines for the full group height
       drawRowVerticals(yTop, yPos, isLS);
     });
 

@@ -45,9 +45,9 @@ export function ProfessionalBillPreview({ header, tables, billDetails }: Props) 
 
       {/* Client Details */}
       <div className="pbClient">
-        <p>To,</p>
+        <p className="pbTo">To,</p>
         <p className="pbClientName">{billDetails.clientName || "________________"}</p>
-        <p>{billDetails.clientAddress || "________________"}</p>
+        <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
       </div>
 
       {/* Subject */}
