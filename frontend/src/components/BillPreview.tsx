@@ -131,7 +131,7 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
               </tr>
             )}
             {customRows.map(r => (
-              <tr key={r.id}>
+              <tr key={r.id} style={{ fontWeight: r.cells.bold === "true" ? "bold" : "normal" }}>
                 {customCols.map(col => {
                   const val = r.cells[col.id] ?? "";
                   const isNum = col.kind === "number";
@@ -212,12 +212,13 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                   <td
                     className="pbParticularsCell"
                     style={{
-                      fontWeight: row.bold ? "bold" : "normal",
                       fontSize: row.fontSize ? `${row.fontSize}px` : undefined,
                       textAlign: row.align || "left"
                     }}
                   >
-                    {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
+                    {row.particulars
+                      ? <span dangerouslySetInnerHTML={{ __html: row.particulars }} />
+                      : <span style={{ color: "#bbb" }}>—</span>}
                   </td>
                   {isLS ? (
                     <td colSpan={2} className="pbLsCell">LS</td>
@@ -294,12 +295,13 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
               <td
                 className="pbParticularsCell"
                 style={{
-                  fontWeight: row.bold ? "bold" : "normal",
                   fontSize: row.fontSize ? `${row.fontSize}px` : undefined,
                   textAlign: row.align || "left"
                 }}
               >
-                {row.particulars || <span style={{ color: "#bbb" }}>—</span>}
+                {row.particulars
+                  ? <span dangerouslySetInnerHTML={{ __html: row.particulars }} />
+                  : <span style={{ color: "#bbb" }}>—</span>}
               </td>
               {isLS ? (
                 <td colSpan={3} className="pbLsCell">LS</td>
@@ -417,15 +419,15 @@ export function BillPreview({ header, sections, billDetails, columnLabels, billF
       {billDetails.showClientDetails !== false && (
         <>
           <p className="pbTo">To,</p>
-          <p className="pbClientName">{billDetails.clientName || "________________"}</p>
+          <p className="pbClientName" dangerouslySetInnerHTML={{ __html: billDetails.clientName || "________________" }} />
           {billDetails.showClientAddress !== false && (
-            <p className="pbClientAddr">{billDetails.clientAddress || "________________"}</p>
+            <p className="pbClientAddr" dangerouslySetInnerHTML={{ __html: billDetails.clientAddress || "________________" }} />
           )}
         </>
       )}
 
       {/* Subject */}
-      {billDetails.subject && <p className="pbSub">Sub: {billDetails.subject}</p>}
+      {billDetails.subject && <p className="pbSub">Sub: <span dangerouslySetInnerHTML={{ __html: billDetails.subject }} /></p>}
 
       {/* Section tables — each with its own top-left label + in-table Total row */}
       {sections.map((section, i) => {
@@ -472,7 +474,7 @@ export function BillPreview({ header, sections, billDetails, columnLabels, billF
       {billDetails.showNote && billDetails.note && (
         <div className="pbNote">
           <p className="pbNoteLabel">Note.</p>
-          <p>{billDetails.note}</p>
+          <p dangerouslySetInnerHTML={{ __html: billDetails.note }} />
         </div>
       )}
 

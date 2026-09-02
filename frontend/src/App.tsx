@@ -5,6 +5,7 @@ import { BillPreview } from "./components/BillPreview";
 import { BillScanner } from "./components/BillScanner";
 import { HeaderEditor } from "./components/HeaderEditor";
 import { BillTableEditor } from "./components/BillTableEditor";
+import { RichTextCell, toggleBoldSelection } from "./components/RichTextCell";
 import { SupabaseSyncManager } from "./components/SupabaseSyncManager";
 import { initialBillDetails, initialHeader } from "./data/initialBill";
 import { money, parseSize, toTitleCase, convertInchesToFeet, convertInchesToFeetDisplay } from "./lib/billMath";
@@ -478,10 +479,8 @@ export function App() {
   }, [selectedCell, sections]);
 
   const toggleBold = () => {
-    if (!selectedCell) return;
-    updateSectionRows(selectedCell.sectionId, rows =>
-      rows.map(r => (r.id === selectedCell.rowId ? { ...r, bold: !r.bold } : r))
-    );
+    // Apply bold to whatever text is currently selected in any contentEditable field
+    toggleBoldSelection();
   };
 
   const adjustFontSize = (delta: number) => {
@@ -650,12 +649,24 @@ export function App() {
                 <>
                   <label>
                     Client Name (To)
-                    <input value={billDetails.clientName} onChange={e => updateDetail("clientName", e.target.value)} placeholder="Client / Party name" />
+                    <RichTextCell
+                      className="billCell billCellRich"
+                      value={billDetails.clientName}
+                      onChange={val => updateDetail("clientName", val)}
+                      placeholder="Client / Party name"
+                      style={{ minHeight: "1.6em", padding: "5px 7px", border: "1px solid #cbd5e1", borderRadius: 5 }}
+                    />
                   </label>
                   {(billDetails.showClientAddress !== false) && (
                     <label>
                       Client Address
-                      <textarea value={billDetails.clientAddress} onChange={e => updateDetail("clientAddress", e.target.value)} placeholder="Client address" style={{ minHeight: 54 }} />
+                      <RichTextCell
+                        className="billCell billCellRich"
+                        value={billDetails.clientAddress}
+                        onChange={val => updateDetail("clientAddress", val)}
+                        placeholder="Client address"
+                        style={{ minHeight: 54, padding: "5px 7px", border: "1px solid #cbd5e1", borderRadius: 5 }}
+                      />
                     </label>
                   )}
                 </>
@@ -663,7 +674,13 @@ export function App() {
 
               <label>
                 Subject
-                <input value={billDetails.subject} onChange={e => updateDetail("subject", e.target.value)} />
+                <RichTextCell
+                  className="billCell billCellRich"
+                  value={billDetails.subject}
+                  onChange={val => updateDetail("subject", val)}
+                  placeholder="Subject line"
+                  style={{ minHeight: "1.6em", padding: "5px 7px", border: "1px solid #cbd5e1", borderRadius: 5 }}
+                />
               </label>
               <label>
                 Advance (₹)
@@ -719,7 +736,13 @@ export function App() {
               {billDetails.showNote && (
                 <label>
                   Note text
-                  <textarea value={billDetails.note} onChange={e => updateDetail("note", e.target.value)} style={{ minHeight: 54 }} />
+                  <RichTextCell
+                    className="billCell billCellRich"
+                    value={billDetails.note}
+                    onChange={val => updateDetail("note", val)}
+                    placeholder="Payment terms, notes..."
+                    style={{ minHeight: 54, padding: "5px 7px", border: "1px solid #cbd5e1", borderRadius: 5 }}
+                  />
                 </label>
               )}
               <label className="toggleRow" style={{ marginBottom: billDetails.showSignature ? 8 : 0 }}>
@@ -825,14 +848,13 @@ export function App() {
         {/* Global formatting toolbar (acts on the selected row) */}
         <div className="billTableToolbar centerToolbar">
           <span className="billTableTitle">
-            {selectedRow ? "Formatting selected row" : "Select a row to format"}
+            {selectedRow ? `Formatting row ${selectedRow.sr}: ${(selectedRow.particulars || "(empty)").replace(/<[^>]*>/g, "")}` : "Select a row to format"}
           </span>
           <div className="tableFormattingToolbar">
             <button 
-              className={`formattingBtn ${selectedRow?.bold ? 'active' : ''}`}
-              onClick={toggleBold}
-              disabled={!selectedRow}
-              title="Bold"
+              className="formattingBtn"
+              onMouseDown={e => { e.preventDefault(); toggleBold(); }}
+              title="Bold (Ctrl+B) — select text in any field first"
             >
               <strong>B</strong>
             </button>
@@ -976,23 +998,18 @@ export function App() {
                     const select = () => setSelectedCell({ sectionId: section.id, rowId: row.id });
                     return (
                       <React.Fragment key={row.id}>
-                      <tr style={{ background: isSelected ? "#f8fafc" : undefined }}>
+                      <tr onClick={select} style={{ background: isSelected ? "#eef2ff" : undefined, cursor: "pointer", outline: isSelected ? "2px solid #6366f1" : undefined }}>
                         <td className="tdCenter">
                           <input className="billCell" style={{ width: 36, textAlign: "center" }} value={row.sr} readOnly tabIndex={-1} onFocus={select} />
                         </td>
                         <td>
-                          <input
-                            className="billCell"
+                          <RichTextCell
+                            className="billCell billCellRich"
                             value={row.particulars}
-                            onChange={e => updateRow(section.id, row.id, "particulars", e.target.value)}
-                            onBlur={e => {
-                              const tc = toTitleCase(e.target.value);
-                              if (tc !== row.particulars) updateRow(section.id, row.id, "particulars", tc);
-                            }}
+                            onChange={html => updateRow(section.id, row.id, "particulars", html)}
                             placeholder="Description of work / material…"
                             onFocus={select}
                             style={{
-                              fontWeight: row.bold ? "bold" : "normal",
                               fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
                               textAlign: row.align || "left"
                             }}

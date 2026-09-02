@@ -50,6 +50,165 @@ function registerRupeeFont(doc: jsPDF): void {
 }
 
 // ============================================
+// Rich text helpers for PDF rendering
+// ============================================
+
+type RichSegment = { text: string; bold: boolean };
+
+/**
+ * Parse an HTML string containing only <b> tags into segments.
+ * E.g. "Main <b>Platform</b> Framing" →
+ *   [{text:"Main ", bold:false}, {text:"Platform", bold:true}, {text:" Framing", bold:false}]
+ */
+function parseRichText(html: string): RichSegment[] {
+  if (!html) return [{ text: "", bold: false }];
+  const segments: RichSegment[] = [];
+  // Split by <b> and </b> tags
+  const parts = html.split(/<\/?b>/gi);
+  // Odd-indexed parts (0-based) are inside <b>...</b>
+  // We need to track open/close: content between <b> and </b> is bold.
+  let inBold = false;
+  let remaining = html;
+  
+  while (remaining.length > 0) {
+    const openIdx = remaining.indexOf("<b>");
+    const openIdxUpper = remaining.indexOf("<B>");
+    const nextOpen = openIdx === -1 ? openIdxUpper : (openIdxUpper === -1 ? openIdx : Math.min(openIdx, openIdxUpper));
+    
+    if (nextOpen === -1) {
+      // No more bold tags — rest is plain
+      const text = stripTags(remaining);
+      if (text) segments.push({ text, bold: false });
+      break;
+    }
+    
+    // Text before the <b> tag
+    if (nextOpen > 0) {
+      const text = stripTags(remaining.substring(0, nextOpen));
+      if (text) segments.push({ text, bold: false });
+    }
+    
+    // Find matching </b>
+    const afterOpen = remaining.substring(nextOpen + 3);
+    const closeIdx = afterOpen.search(/<\/b>/i);
+    
+    if (closeIdx === -1) {
+      // Unclosed <b> — treat rest as bold
+      const text = stripTags(afterOpen);
+      if (text) segments.push({ text, bold: true });
+      break;
+    }
+    
+    const boldText = stripTags(afterOpen.substring(0, closeIdx));
+    if (boldText) segments.push({ text: boldText, bold: true });
+    remaining = afterOpen.substring(closeIdx + 4);
+  }
+  
+  return segments.length > 0 ? segments : [{ text: stripTags(html), bold: false }];
+}
+
+/** Strip all HTML tags from a string */
+function stripTags(html: string): string {
+  return html.replace(/<[^>]*>/g, "");
+}
+
+/** Get plain text from HTML (strips tags) */
+function getPlainText(html: string): string {
+  return stripTags(html);
+}
+
+/**
+ * Draw a single line of text with mixed bold/normal segments.
+ * `line` is the plain-text content of one wrapped line.
+ * `segments` is the full list of rich segments for the entire cell.
+ * `fullPlain` is the full plain text (used to map line position back to segments).
+ */
+function drawRichLine(
+  doc: any, line: string, segments: RichSegment[], fullPlain: string,
+  x: number, y: number, fontSize: number, align: "left" | "center" | "right"
+): void {
+  // If no bold segments exist, just draw normally
+  const hasBold = segments.some(s => s.bold);
+  if (!hasBold) {
+    doc.setFont("times", "normal");
+    doc.setFontSize(fontSize);
+    doc.text(line, x, y, { align });
+    return;
+  }
+
+  // Find where this line starts in the full plain text
+  const lineStart = fullPlain.indexOf(line);
+  if (lineStart === -1) {
+    // Fallback: draw as normal
+    doc.setFont("times", "normal");
+    doc.setFontSize(fontSize);
+    doc.text(line, x, y, { align });
+    return;
+  }
+
+  // Map character positions to bold state
+  let charIdx = 0;
+  const charBold: boolean[] = [];
+  for (const seg of segments) {
+    for (let i = 0; i < seg.text.length; i++) {
+      charBold[charIdx++] = seg.bold;
+    }
+  }
+
+  // Extract segments for this specific line
+  const lineSegments: RichSegment[] = [];
+  let i = lineStart;
+  const lineEnd = lineStart + line.length;
+  while (i < lineEnd) {
+    const bold = charBold[i] || false;
+    let segText = "";
+    while (i < lineEnd && (charBold[i] || false) === bold) {
+      segText += fullPlain[i];
+      i++;
+    }
+    if (segText) lineSegments.push({ text: segText, bold });
+  }
+
+  // For left alignment, draw each segment sequentially
+  if (align === "left") {
+    let curX = x;
+    for (const seg of lineSegments) {
+      doc.setFont("times", seg.bold ? "bold" : "normal");
+      doc.setFontSize(fontSize);
+      doc.text(seg.text, curX, y, { align: "left" });
+      curX += doc.getTextWidth(seg.text);
+    }
+  } else {
+    // For center/right, measure total width first, then draw from calculated start
+    let totalWidth = 0;
+    for (const seg of lineSegments) {
+      doc.setFont("times", seg.bold ? "bold" : "normal");
+      doc.setFontSize(fontSize);
+      totalWidth += doc.getTextWidth(seg.text);
+    }
+    let startX = align === "right" ? x - totalWidth : x - totalWidth / 2;
+    for (const seg of lineSegments) {
+      doc.setFont("times", seg.bold ? "bold" : "normal");
+      doc.setFontSize(fontSize);
+      doc.text(seg.text, startX, y, { align: "left" });
+      startX += doc.getTextWidth(seg.text);
+    }
+  }
+}
+
+/**
+ * Convert rich HTML text to an array of docx TextRun objects for Word export.
+ */
+function richTextToDocxRuns(html: string, size?: number): any[] {
+  const segments = parseRichText(html);
+  return segments.map(seg => new TextRun({
+    text: seg.text,
+    bold: seg.bold,
+    ...(size ? { size } : {})
+  }));
+}
+
+// ============================================
 // PDF Export
 // ============================================
 export async function exportToPDF(
@@ -558,7 +717,7 @@ export async function exportProfessionalPDF(
   if (billDetails.showHeader !== false) {
     // Single line above name (drawn wider)
     doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
+    doc.setLineWidth(0.3);
     doc.line(margin - 8, yPos, pageWidth - margin + 8, yPos);
     
     const fsName = header.fontSizeName || 24;
@@ -599,7 +758,7 @@ export async function exportProfessionalPDF(
     // First double line (top line is longer/full-width, bottom line is indented/shorter)
     yPos += -1.8;
     doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
+    doc.setLineWidth(0.3);
     doc.line(margin, yPos, pageWidth - margin, yPos);
     doc.line(margin + 10, yPos + 1.0, pageWidth - margin - 10, yPos + 1.0);
     
@@ -636,12 +795,18 @@ export async function exportProfessionalPDF(
     doc.setFont("times", "normal");
     doc.text("To,", margin, yPos);
     yPos += 3.8;
-    doc.setFont("times", "normal");
-    doc.text(billDetails.clientName || "________________", margin, yPos);
+    // Client name — render with inline bold segments
+    const clientSegments = parseRichText(billDetails.clientName || "________________");
+    const clientPlain = getPlainText(billDetails.clientName || "________________");
+    drawRichLine(doc, clientPlain, clientSegments, clientPlain, margin, yPos, 11, "left");
     yPos += 3.8;
     if (billDetails.showClientAddress !== false) {
-      const addressLines = doc.splitTextToSize(billDetails.clientAddress || "________________", pageWidth - 2 * margin - 40);
-      doc.text(addressLines, margin, yPos);
+      const addrPlain = getPlainText(billDetails.clientAddress || "________________");
+      const addrSegments = parseRichText(billDetails.clientAddress || "________________");
+      const addressLines = doc.splitTextToSize(addrPlain, pageWidth - 2 * margin - 40);
+      addressLines.forEach((line: string, idx: number) => {
+        drawRichLine(doc, line, addrSegments, addrPlain, margin, yPos + idx * 3.8, 11, "left");
+      });
       yPos += addressLines.length * 3.8;
     } else {
       yPos += 3.8;
@@ -651,8 +816,10 @@ export async function exportProfessionalPDF(
 
   // Subject - Centered (only when a subject is provided)
   if (billDetails.subject && billDetails.subject.trim()) {
-    doc.setFont("times", "normal");
-    doc.text(`Sub: ${billDetails.subject}`, pageWidth / 2, yPos, { align: "center", maxWidth: pageWidth - 40 });
+    doc.setFontSize(11);
+    const subPlain = getPlainText(billDetails.subject);
+    const subSegments = parseRichText(billDetails.subject);
+    drawRichLine(doc, `Sub: ${subPlain}`, [{ text: "Sub: ", bold: false }, ...subSegments], `Sub: ${subPlain}`, pageWidth / 2, yPos, 11, "center");
     yPos += 12;
   }
 
@@ -926,9 +1093,13 @@ export async function exportProfessionalPDF(
       const align = (row.cells.align as any) || "left";
 
       // Particulars (per-row font size / weight, wraps within its column).
-      doc.setFont("times", isBold ? "bold" : "normal");
+      // Parse rich text segments for inline bold; use bold font for measurement
+      // to get the widest possible text (bold is wider than normal).
+      const richSegments = parseRichText(row.cells.particulars || "");
+      const plainParticulars = getPlainText(row.cells.particulars || "");
+      doc.setFont("times", "bold");
       doc.setFontSize(fontSize);
-      const lines = doc.splitTextToSize(row.cells.particulars || "", colWidths[1] - 4);
+      const lines = doc.splitTextToSize(plainParticulars, colWidths[1] - 4);
       const lineSpacing = fontSize * 0.405;
       const capHeight = fontSize * 0.25;
       const textHeight = heightOf(lines.length, lineSpacing, capHeight);
@@ -988,7 +1159,7 @@ export async function exportProfessionalPDF(
       } catch {}
 
       return {
-        row, fontSize, isBold, align, isLS: isLSRow,
+        row, fontSize, isBold, align, isLS: isLSRow, richSegments, plainParticulars,
         lines, lineSpacing, capHeight, textHeight, maxTextHeight, naturalHeight,
         srLines, sizeLines, qtyLines, rateLines, amtLines,
         subRowsData, totalGroupHeight
@@ -1091,11 +1262,12 @@ export async function exportProfessionalPDF(
         yTop + rowHeight / 2 - ((Math.max(n, 1) - 1) * lineSpacing) / 2 + capHeight / 2;
 
       if (isCustomFormat && table.columns && table.columns.length > 0) {
-        doc.setFont("times", "normal");
+        const customBold = m.isBold;
         doc.setFontSize(nfs);
         table.columns.forEach((c, ci) => {
           const rawVal = m.row.cells[c.id] ?? "";
           let valStr = rawVal;
+          const isPartCol = c.label.toLowerCase().includes("particular") || ci === 1;
           if (c.label.toLowerCase().includes("size") || c.id === "size") {
             const applyInchM = (table.mode ?? "template") !== "manual";
             valStr = applyInchM && rawVal ? convertAllPointValues(rawVal) : rawVal;
@@ -1108,11 +1280,23 @@ export async function exportProfessionalPDF(
             }
           }
           const cX = (verticalX[ci] + verticalX[ci + 1]) / 2;
-          const isPartCol = c.label.toLowerCase().includes("particular") || ci === 1;
           const alignOpt = isPartCol ? (align === "right" ? "right" : align === "center" ? "center" : "left") : "center";
           const drawPosX = isPartCol ? (align === "right" ? verticalX[ci + 1] - 2 : align === "center" ? cX : verticalX[ci] + 2) : cX;
-          const lines = doc.splitTextToSize(valStr || "\u2014", Math.max(colWidths[ci] - 3, 5));
-          doc.text(lines, drawPosX, baselineFor(lines.length, nLineSpacing, nCapHeight), { align: alignOpt });
+
+          if (isPartCol) {
+            // Use rich text rendering for Particulars column
+            const plainVal = getPlainText(rawVal || "");
+            const lines = doc.splitTextToSize(plainVal || "\u2014", Math.max(colWidths[ci] - 3, 5));
+            const segments = parseRichText(rawVal || "");
+            lines.forEach((line: string, lineIdx: number) => {
+              const lineY = baselineFor(lines.length, nLineSpacing, nCapHeight) + lineIdx * nLineSpacing;
+              drawRichLine(doc, line, segments, plainVal, drawPosX, lineY, nfs, alignOpt as any);
+            });
+          } else {
+            doc.setFont("times", "normal");
+            const lines = doc.splitTextToSize(valStr || "\u2014", Math.max(colWidths[ci] - 3, 5));
+            doc.text(lines, drawPosX, baselineFor(lines.length, nLineSpacing, nCapHeight), { align: alignOpt });
+          }
         });
 
         const amtCol = findCustomAmountCol(table.columns);
@@ -1123,12 +1307,17 @@ export async function exportProfessionalPDF(
         doc.setFontSize(nfs);
         doc.text(m.srLines, srCenterX, baselineForGroup(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
-        // Particulars (per-row font size / weight, honours row alignment).
-        doc.setFont("times", m.isBold ? "bold" : "normal");
+        // Particulars — render with inline bold segments (Word/Excel style).
         doc.setFontSize(m.fontSize);
         const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
         const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
-        doc.text(m.lines, drawX, baselineFor(m.lines.length, m.lineSpacing, m.capHeight), { align: alignOpt });
+        const baseY = baselineFor(m.lines.length, m.lineSpacing, m.capHeight);
+
+        // For each wrapped line, render segments with correct bold/normal
+        m.lines.forEach((line: string, lineIdx: number) => {
+          const lineY = baseY + lineIdx * m.lineSpacing;
+          drawRichLine(doc, line, m.richSegments, m.plainParticulars, drawX, lineY, m.fontSize, alignOpt as any);
+        });
 
         // Size / Quantity / Rate (or a single merged "LS" cell).
         doc.setFont("times", "normal");
@@ -1270,10 +1459,10 @@ export async function exportProfessionalPDF(
     let rowsH = 0;
     table.rows.forEach(row => {
       const fontSize = parseInt(row.cells.fontSize) || 11;
-      const isBold = row.cells.bold === "true";
-      doc.setFont("times", isBold ? "bold" : "normal");
+      doc.setFont("times", "bold");
       doc.setFontSize(fontSize);
-      const lines = doc.splitTextToSize(row.cells.particulars || "", colWidths[1] - 4);
+      const plainText = getPlainText(row.cells.particulars || "");
+      const lines = doc.splitTextToSize(plainText, colWidths[1] - 4);
       const lineSpacing = fontSize * 0.405;
       const capHeight = fontSize * 0.25;
       const textHeight = (lines.length - 1) * lineSpacing + capHeight;
@@ -1375,11 +1564,19 @@ export async function exportProfessionalPDF(
   // Note
   if (billDetails.showNote && billDetails.note) {
     doc.setFont("times", "bold");
+    doc.setFontSize(11);
     doc.text("Note.", margin, yPos);
     yPos += 5;
+    // Render note with inline bold support
+    const notePlain = getPlainText(billDetails.note);
+    const noteSegments = parseRichText(billDetails.note);
     doc.setFont("times", "normal");
-    doc.text(billDetails.note, margin, yPos, { maxWidth: pageWidth - 40 });
-    yPos += 15;
+    doc.setFontSize(11);
+    const noteLines = doc.splitTextToSize(notePlain, pageWidth - 40);
+    noteLines.forEach((line: string, idx: number) => {
+      drawRichLine(doc, line, noteSegments, notePlain, margin, yPos + idx * 4, 11, "left");
+    });
+    yPos += noteLines.length * 4 + 8;
   }
 
   // Signature
@@ -1484,14 +1681,14 @@ export async function exportProfessionalExcel(
 
   if (billDetails.showClientDetails !== false) {
     ws.addRow(["To,"]);
-    const cn = ws.addRow([billDetails.clientName || ""]);
+    const cn = ws.addRow([getPlainText(billDetails.clientName || "")]);
     cn.getCell(1).font = { bold: true };
-    if (billDetails.showClientAddress !== false) ws.addRow([billDetails.clientAddress || ""]);
+    if (billDetails.showClientAddress !== false) ws.addRow([getPlainText(billDetails.clientAddress || "")]);
   }
   addSpacer();
 
   if (billDetails.subject && billDetails.subject.trim()) {
-    ws.addRow([`Sub: ${billDetails.subject}`]);
+    ws.addRow([`Sub: ${getPlainText(billDetails.subject)}`]);
     addSpacer();
   }
 
@@ -1559,7 +1756,7 @@ export async function exportProfessionalExcel(
         const mAmt = parseFloat(row.cells.materialAmount) || 0;
         const dr = ws.addRow([
           row.cells.sr || String(index + 1),
-          row.cells.particulars || "",
+          getPlainText(row.cells.particulars || ""),
           row.cells.size || "",
           row.cells.quantity || "",
           lRate > 0 ? lRate : "",
@@ -1600,7 +1797,7 @@ export async function exportProfessionalExcel(
       const rateRounded = Math.round(rate * 100) / 100;
       const dr = ws.addRow([
         row.cells.sr || String(index + 1),
-        row.cells.particulars || "",
+        getPlainText(row.cells.particulars || ""),
         isLS ? "LS" : (row.cells.size || ""),
         isLS ? "" : (qty > 0 ? qtyRounded : ""),
         isLS ? "" : (rate > 0 ? rateRounded : ""),
@@ -1646,7 +1843,7 @@ export async function exportProfessionalExcel(
   if (billDetails.showNote && billDetails.note) {
     const n = ws.addRow(["Note."]);
     n.getCell(1).font = { bold: true };
-    ws.addRow([billDetails.note]);
+    ws.addRow([getPlainText(billDetails.note)]);
     addSpacer();
   }
 
@@ -1777,9 +1974,9 @@ export async function exportProfessionalWord(
 
   // Client
   children.push(new Paragraph({ children: [new TextRun({ text: "To,", size: 22 })], spacing: { before: 200 } }));
-  children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientName, bold: true, size: 22 })] }));
+  children.push(new Paragraph({ children: richTextToDocxRuns(billDetails.clientName, 22) }));
   if (billDetails.showClientAddress !== false) {
-    children.push(new Paragraph({ children: [new TextRun({ text: billDetails.clientAddress, size: 22 })], spacing: { after: 200 } }));
+    children.push(new Paragraph({ children: richTextToDocxRuns(billDetails.clientAddress, 22), spacing: { after: 200 } }));
   } else {
     children.push(new Paragraph({ children: [new TextRun({ text: "", size: 22 })], spacing: { after: 200 } }));
   }
@@ -1787,7 +1984,7 @@ export async function exportProfessionalWord(
   // Subject
   children.push(
     new Paragraph({
-      children: [new TextRun({ text: `Sub: ${billDetails.subject}`, size: 22 })],
+      children: [new TextRun({ text: "Sub: ", size: 22 }), ...richTextToDocxRuns(billDetails.subject, 22)],
       spacing: { after: 200 }
     })
   );
@@ -1880,7 +2077,7 @@ export async function exportProfessionalWord(
         tableRows.push(new TableRow({
           children: [
             new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] }),
-            new TableCell({ children: [new Paragraph({ text: row.cells.particulars || "" })] }),
+            new TableCell({ children: [new Paragraph({ children: richTextToDocxRuns(row.cells.particulars || "") })] }),
             new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
             new TableCell({ children: [new Paragraph({ text: row.cells.quantity || "", alignment: AlignmentType.CENTER })] }),
             new TableCell({ children: [new Paragraph({ text: lRate > 0 ? pdfNumber(lRate) : "—", alignment: AlignmentType.CENTER })] }),
@@ -1943,7 +2140,7 @@ export async function exportProfessionalWord(
       const particularsCell = new TableCell({
         children: [
           new Paragraph({
-            children: [new TextRun({ text: row.cells.particulars || "", bold: isBold, size: fontSize * 2 })],
+            children: richTextToDocxRuns(row.cells.particulars || "", fontSize * 2),
             alignment: wordAlign
           })
         ]
@@ -2012,7 +2209,7 @@ export async function exportProfessionalWord(
   // Note
   if (billDetails.showNote && billDetails.note) {
     children.push(new Paragraph({ children: [new TextRun({ text: "Note.", bold: true, size: 22 })], spacing: { before: 400 } }));
-    children.push(new Paragraph({ children: [new TextRun({ text: billDetails.note, size: 22 })] }));
+    children.push(new Paragraph({ children: richTextToDocxRuns(billDetails.note, 22) }));
   }
 
   // Signature

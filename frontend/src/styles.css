@@ -578,6 +578,19 @@ input:focus, textarea:focus, select:focus {
 }
 .billCell:focus { border-color: #1a56db; background: #fff; box-shadow: 0 0 0 2px rgba(26,86,219,0.15); }
 
+/* Rich text (contentEditable) variant of billCell */
+.billCellRich {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.billCellRich:empty::before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+  pointer-events: none;
+}
+.billCellRich:focus { border-color: #1a56db; background: #fff; box-shadow: 0 0 0 2px rgba(26,86,219,0.15); }
+
 /* ── Table footer totals ────────────────────────────────────────────────────── */
 .tableFooterArea {
   display: flex;
