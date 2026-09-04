@@ -1009,6 +1009,7 @@ export function App() {
                             onChange={html => updateRow(section.id, row.id, "particulars", html)}
                             placeholder="Description of work / material…"
                             onFocus={select}
+                            titleCase
                             style={{
                               fontSize: row.fontSize ? `${row.fontSize}px` : "13px",
                               textAlign: row.align || "left"

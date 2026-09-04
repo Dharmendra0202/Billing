@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback } from "react";
+import { toTitleCase } from "../lib/billMath";
 
 type Props = {
   value: string; // HTML string (e.g. "Hello <b>World</b>")
@@ -9,6 +10,8 @@ type Props = {
   className?: string;
   /** Allow Enter to insert a line break (for Note / Address fields). */
   multiline?: boolean;
+  /** Auto-capitalize each word on blur (Title Case), preserving bold markup. */
+  titleCase?: boolean;
 };
 
 /**
@@ -18,26 +21,30 @@ type Props = {
  *
  * Stores value as simple HTML: text plus <b> and <br> tags only.
  */
-export function RichTextCell({ value, onChange, onFocus, placeholder, style, className, multiline }: Props) {
+export function RichTextCell({ value, onChange, onFocus, placeholder, style, className, multiline, titleCase }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const isComposing = useRef(false);
   const lastHtml = useRef(value);
 
-  // Sync external value into the DOM only when it genuinely differs from what
-  // we last emitted (avoids caret jump on every keystroke).
+  // Sync external value into the DOM only when the incoming value genuinely
+  // differs from what this cell last emitted. Comparing against lastHtml (not
+  // the live innerHTML) avoids overwriting the DOM — and resetting the caret —
+  // on re-renders caused by unrelated state changes.
   useEffect(() => {
     if (!ref.current) return;
-    if (document.activeElement === ref.current) return; // never stomp on the caret
-    const incoming = normalizeIncoming(value);
-    if (ref.current.innerHTML !== incoming) {
-      ref.current.innerHTML = incoming;
+    if (value === lastHtml.current) return;        // nothing new for us
+    if (document.activeElement === ref.current) {  // user is mid-edit here
+      lastHtml.current = value;                    // trust our own emitted value
+      return;                                      // don't stomp the caret
     }
+    ref.current.innerHTML = normalizeIncoming(value);
     lastHtml.current = value;
   }, [value]);
 
   // Set initial content
   useEffect(() => {
     if (ref.current) ref.current.innerHTML = normalizeIncoming(value);
+    lastHtml.current = value;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -80,6 +87,15 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
     emitChange();
   };
 
+  const handleBlur = () => {
+    // On blur, optionally Title-Case the content. We rewrite each text node in
+    // place so bold (<b>) and line-break (<br>) markup is preserved.
+    if (titleCase && ref.current) {
+      applyTitleCaseToDom(ref.current);
+    }
+    emitChange();
+  };
+
   return (
     <div
       ref={ref}
@@ -92,7 +108,7 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
       onCompositionStart={() => { isComposing.current = true; }}
       onCompositionEnd={() => { isComposing.current = false; emitChange(); }}
       onFocus={onFocus}
-      onBlur={emitChange}
+      onBlur={handleBlur}
       data-placeholder={placeholder}
       style={{
         minHeight: "1.4em",
@@ -139,6 +155,27 @@ export function toggleBoldSelection(): void {
 
   applyBold();
   host.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/**
+ * Apply Title Case to every text node inside the element, in place.
+ * Because we only touch text-node contents, existing <b> and <br> markup
+ * (i.e. bold runs and line breaks) is left untouched.
+ */
+function applyTitleCaseToDom(root: HTMLElement): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  let n = walker.nextNode();
+  while (n) {
+    textNodes.push(n as Text);
+    n = walker.nextNode();
+  }
+  textNodes.forEach(tn => {
+    const original = tn.textContent || "";
+    if (!original.trim()) return;
+    const cased = toTitleCase(original);
+    if (cased !== original) tn.textContent = cased;
+  });
 }
 
 /** Prepare a stored value for injection into the DOM. */
