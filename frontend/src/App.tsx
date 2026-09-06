@@ -48,6 +48,7 @@ function sectionToBillTable(section: BillSection, format: BillFormat = "standard
       title: section.title,
       page: section.page,
       mode: section.mode,
+      showTableTotal: section.showTableTotal,
       columns,
       rows
     };
@@ -521,13 +522,18 @@ export function App() {
   const handleExport = async (format: "pdf" | "excel" | "word") => {
     const detailsWithAdvance: BillDetails = { ...billDetails, advance: billDetails.advance };
     const exportTables = currentBillTables;
-    if (format === "pdf") {
-      // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
-      const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels, billFormat, columnVisibility });
-      await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat }, columnLabels);
+    try {
+      if (format === "pdf") {
+        // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
+        const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels, billFormat, columnVisibility });
+        await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat }, columnLabels);
+      }
+      else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
+      else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
+    } catch (err) {
+      console.error(`${format.toUpperCase()} export failed:`, err);
+      alert(`${format.toUpperCase()} export failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
-    else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
   };
 
   // Open a bill PDF that was exported from this app and restore it for editing.
@@ -898,7 +904,8 @@ export function App() {
                     page: updatedTable.page,
                     mode: updatedTable.mode,
                     columns: updatedTable.columns,
-                    customRows: updatedTable.rows
+                    customRows: updatedTable.rows,
+                    showTableTotal: updatedTable.showTableTotal
                   } : s));
                 }}
                 onDelete={() => deleteTable(section.id)}
@@ -1018,13 +1025,6 @@ export function App() {
                         </td>
                         {columnVisibility.size && (
                         <td>
-                          <input
-                            className="billCell"
-                            value={row.size}
-                            onChange={e => updateRow(section.id, row.id, "size", e.target.value)}
-                            placeholder="e.g. 3x4 or 12"
-                            onFocus={select}
-                          />
                           {(() => {
                             const rowMode = row.mode ?? (isManual ? "manual" : "template");
                             const rowIsManual = rowMode === "manual";
@@ -1033,7 +1033,7 @@ export function App() {
                             const parsed = parseSize(row.size, rowMode === "template", rowMode);
                             const changed = !rowIsManual && converted !== row.size;
                             return (
-                              <div className="sizeRowControls">
+                              <div className="sizeCellLayout">
                                 <button
                                   className={`rowModeBtn ${rowIsManual ? "manual" : rowMode === "inches" ? "inches" : "template"}`}
                                   onClick={() => {
@@ -1050,12 +1050,21 @@ export function App() {
                                 >
                                   {rowIsManual ? "M" : rowMode === "inches" ? "I" : "T"}
                                 </button>
-                                {row.size.trim() && (
-                                  <small className="sizeHint">
-                                    {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
-                                    {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
-                                  </small>
-                                )}
+                                <div className="sizeCellContent">
+                                  <input
+                                    className="billCell"
+                                    value={row.size}
+                                    onChange={e => updateRow(section.id, row.id, "size", e.target.value)}
+                                    placeholder="e.g. 3x4 or 12"
+                                    onFocus={select}
+                                  />
+                                  {row.size.trim() && (
+                                    <small className="sizeHint">
+                                      {changed && <span style={{ color: "#1a56db" }}>→ {converted} </span>}
+                                      {/[+\-*/x*×]/i.test(row.size) && <span>= {parsed}</span>}
+                                    </small>
+                                  )}
+                                </div>
                               </div>
                             );
                           })()}

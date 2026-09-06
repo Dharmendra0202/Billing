@@ -169,6 +169,11 @@ export function BillTableEditor({ table, tables, onChange, onDelete, onAddTable 
     onChange({ ...table, page: next });
   };
 
+  const showTableTotal = table.showTableTotal !== false;
+  const toggleTableTotal = () => {
+    onChange({ ...table, showTableTotal: !showTableTotal });
+  };
+
   const numberColumns = table.columns.filter((column) => column.kind === "number");
   const isRowBold = selectedRow?.cells.bold === "true";
   const rowFs = parseInt(selectedRow?.cells.fontSize || "13") || 13;
@@ -237,6 +242,15 @@ export function BillTableEditor({ table, tables, onChange, onDelete, onAddTable 
           >
             {isManual ? <Calculator size={13} /> : <Ruler size={13} />}
             {isManual ? "Manual" : "Template"}
+          </button>
+          <button
+            className={`modeToggleBtn ${showTableTotal ? "template" : "manual"}`}
+            onClick={toggleTableTotal}
+            title={showTableTotal
+              ? "The Total row is shown at the bottom of this table. Click to hide it."
+              : "The Total row is hidden. Click to show it."}
+          >
+            {showTableTotal ? "Total: On" : "Total: Off"}
           </button>
           <button className="textButton" onClick={() => addColumn()}>
             <Columns3 size={16} /> Column

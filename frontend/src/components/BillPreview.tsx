@@ -133,11 +133,19 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
             {customRows.map(r => (
               <tr key={r.id} style={{ fontWeight: r.cells.bold === "true" ? "bold" : "normal" }}>
                 {customCols.map(col => {
-                  const val = r.cells[col.id] ?? "";
+                  let val = r.cells[col.id] ?? "";
                   const isNum = col.kind === "number";
+                  // A bare "0" in a number column means "not filled" — show blank.
+                  if (isNum && val.trim() === "0") val = "";
                   const isSizeCol = col.label.toLowerCase().includes("size") || col.id === "size";
+                  // Only format as a number when the WHOLE value is a clean number
+                  // (e.g. "15000"). If it contains any letters/symbols like
+                  // "15000/NOS", show it exactly as typed.
+                  const isPureNumber = val.trim() !== "" && /^-?\d+(\.\d+)?$/.test(val.trim());
                   const numVal = parseFloat(val);
-                  const displayVal = isNum && !isNaN(numVal) ? (col.label.toLowerCase().includes("amount") ? money(numVal) : formatNumber(numVal)) : val;
+                  const displayVal = isNum && isPureNumber
+                    ? (col.label.toLowerCase().includes("amount") ? money(numVal) : formatNumber(numVal))
+                    : val;
                   const align = getColAlign(col);
                   return (
                     <td key={col.id} style={{ textAlign: align }}>
@@ -151,13 +159,14 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                             )}
                           </>
                         );
-                      })() : (displayVal || <span style={{ color: "#bbb" }}>—</span>)}
+                      })() : (displayVal !== "" ? displayVal : "")}
                     </td>
                   );
                 })}
               </tr>
             ))}
           </tbody>
+          {section.showTableTotal !== false && (
           <tfoot>
             <tr className="pbTotalRow">
               <td colSpan={Math.max(1, amtColIdx - 1)} className="pbTotalSpacer"></td>
@@ -165,6 +174,7 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
               <td className="pbTotalValue" style={{ textAlign: "right", fontWeight: "bold" }}>{money(subtotalCustom).replace("₹ ", "")}</td>
             </tr>
           </tfoot>
+          )}
         </table>
       </div>
     );

@@ -69,6 +69,9 @@ export type BillTable = {
   // "template" | "manual" — controls whether size values are shown with inch
   // conversion in exports. Default "template".
   mode?: "template" | "manual" | "inches";
+  // Custom format only: show the attached "Total" row at the bottom of the
+  // table. Defaults to true when missing (backward compatible).
+  showTableTotal?: boolean;
 };
 
 // Bill details that change per bill
@@ -146,5 +149,8 @@ export type BillSection = {
   // Which page this table prints on. Tables sharing a number group on the same
   // page; a higher number than the previous table starts a new page. Default 1.
   page?: number;
+  // Custom format only: show the attached "Total" row at the bottom of the
+  // table. Defaults to true when missing (backward compatible).
+  showTableTotal?: boolean;
 };
 

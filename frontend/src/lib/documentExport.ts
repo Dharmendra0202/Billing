@@ -127,22 +127,27 @@ function drawRichLine(
   doc: any, line: string, segments: RichSegment[], fullPlain: string,
   x: number, y: number, fontSize: number, align: "left" | "center" | "right"
 ): void {
+  // Guard against invalid inputs that make jsPDF.text throw "Invalid arguments".
+  const safeLine = typeof line === "string" ? line : String(line ?? "");
+  const safeX = (typeof x === "number" && !isNaN(x)) ? x : 0;
+  const safeY = (typeof y === "number" && !isNaN(y)) ? y : 0;
+
   // If no bold segments exist, just draw normally
   const hasBold = segments.some(s => s.bold);
   if (!hasBold) {
     doc.setFont("times", "normal");
     doc.setFontSize(fontSize);
-    doc.text(line, x, y, { align });
+    doc.text(safeLine, safeX, safeY, { align });
     return;
   }
 
   // Find where this line starts in the full plain text
-  const lineStart = fullPlain.indexOf(line);
+  const lineStart = fullPlain.indexOf(safeLine);
   if (lineStart === -1) {
     // Fallback: draw as normal
     doc.setFont("times", "normal");
     doc.setFontSize(fontSize);
-    doc.text(line, x, y, { align });
+    doc.text(safeLine, safeX, safeY, { align });
     return;
   }
 
@@ -158,7 +163,7 @@ function drawRichLine(
   // Extract segments for this specific line
   const lineSegments: RichSegment[] = [];
   let i = lineStart;
-  const lineEnd = lineStart + line.length;
+  const lineEnd = lineStart + safeLine.length;
   while (i < lineEnd) {
     const bold = charBold[i] || false;
     let segText = "";
@@ -171,11 +176,11 @@ function drawRichLine(
 
   // For left alignment, draw each segment sequentially
   if (align === "left") {
-    let curX = x;
+    let curX = safeX;
     for (const seg of lineSegments) {
       doc.setFont("times", seg.bold ? "bold" : "normal");
       doc.setFontSize(fontSize);
-      doc.text(seg.text, curX, y, { align: "left" });
+      doc.text(seg.text, curX, safeY, { align: "left" });
       curX += doc.getTextWidth(seg.text);
     }
   } else {
@@ -186,11 +191,11 @@ function drawRichLine(
       doc.setFontSize(fontSize);
       totalWidth += doc.getTextWidth(seg.text);
     }
-    let startX = align === "right" ? x - totalWidth : x - totalWidth / 2;
+    let startX = align === "right" ? safeX - totalWidth : safeX - totalWidth / 2;
     for (const seg of lineSegments) {
       doc.setFont("times", seg.bold ? "bold" : "normal");
       doc.setFontSize(fontSize);
-      doc.text(seg.text, startX, y, { align: "left" });
+      doc.text(seg.text, startX, safeY, { align: "left" });
       startX += doc.getTextWidth(seg.text);
     }
   }
@@ -201,11 +206,13 @@ function drawRichLine(
  */
 function richTextToDocxRuns(html: string, size?: number): any[] {
   const segments = parseRichText(html);
-  return segments.map(seg => new TextRun({
-    text: seg.text,
+  const runs = segments.map(seg => new TextRun({
+    text: seg.text || "",
     bold: seg.bold,
     ...(size ? { size } : {})
   }));
+  // docx throws on a Paragraph with an empty children array — guarantee one run.
+  return runs.length > 0 ? runs : [new TextRun({ text: "", ...(size ? { size } : {}) })];
 }
 
 // ============================================
@@ -684,7 +691,8 @@ export async function exportProfessionalPDF(
   options?: { fitToOnePage?: boolean; embed?: string; format?: "standard" | "labourMaterial" | "custom" },
   columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
-  const doc = new jsPDF();
+  // Explicit A4 portrait (210 x 297 mm) so the page size never depends on defaults.
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   registerRupeeFont(doc);
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 20;
@@ -916,34 +924,70 @@ export async function exportProfessionalPDF(
         ];
 
     const cw = contentWidth;
-    const fixedWidths: Record<string, number> = {
-      sr: 16,
-      size: 24,
-      quantity: 18,
-      rate: 18,
-      amount: 24
+    const allCustomRows = tables.flatMap(t => t.rows);
+
+    // Format a cell exactly like it will be drawn, so measurement matches output.
+    const displayForMeasure = (c: BillColumn, raw: string): string => {
+      let v = (raw ?? "").trim();
+      if (c.kind === "number" && v === "0") v = ""; // bare 0 = not filled
+      if (v === "") return "";
+      const isPureNumber = /^-?\d+(\.\d+)?$/.test(v);
+      if (c.label.toLowerCase().includes("size") || c.id === "size") {
+        const applyInchM = (tables[0]?.mode ?? "template") !== "manual";
+        return applyInchM ? convertAllPointValues(v) : v;
+      }
+      if (c.kind === "number" && isPureNumber) {
+        const num = parseFloat(v);
+        return c.label.toLowerCase().includes("amount") ? pdfCurrency(num) : pdfNumber(num);
+      }
+      return v; // verbatim text
     };
 
+    // Measure the widest text a column needs: its header label and every cell.
+    const measureColWidth = (c: BillColumn): number => {
+      doc.setFont("times", "bold");
+      doc.setFontSize(11);
+      let w = doc.getTextWidth(c.label || "");
+      doc.setFont("times", "normal");
+      for (const r of allCustomRows) {
+        const txt = displayForMeasure(c, r.cells[c.id] ?? "");
+        if (txt) w = Math.max(w, doc.getTextWidth(txt));
+      }
+      return w;
+    };
+
+    const PAD = 6;            // breathing room inside each column
+    const NON_PART_MIN = 14;  // minimum width for a non-particulars column
+    const NON_PART_CAP = 55;  // don't let a single column hog everything
+    const PART_MIN = 40;      // Particulars keeps at least this much
+
     const computedWidths = customCols.map((c) => {
-      const key = c.id.toLowerCase();
-      const labelKey = c.label.toLowerCase();
-      if (key.includes("particular") || labelKey.includes("particular")) {
-        return -1;
-      }
-      for (const [k, w] of Object.entries(fixedWidths)) {
-        if (key.includes(k) || labelKey.includes(k)) return w;
-      }
-      return c.kind === "number" ? 22 : 25;
+      const isPart = c.id.toLowerCase().includes("particular") || c.label.toLowerCase().includes("particular");
+      if (isPart) return -1; // filled from leftover space
+      const measured = measureColWidth(c) + PAD;
+      return Math.min(Math.max(measured, NON_PART_MIN), NON_PART_CAP);
     });
 
     const definedSum = computedWidths.reduce((sum, w) => sum + (w > 0 ? w : 0), 0);
     const partIdx = computedWidths.findIndex(w => w === -1);
-    const remaining = Math.max(30, cw - definedSum);
+    let remaining = cw - definedSum;
+
     if (partIdx !== -1) {
-      computedWidths[partIdx] = remaining;
+      // Give Particulars the leftover; if that's below its minimum, shrink the
+      // other columns proportionally so Particulars still fits.
+      if (remaining < PART_MIN) {
+        const shrinkTarget = cw - PART_MIN;
+        const scaleF = definedSum > 0 ? Math.max(0.4, shrinkTarget / definedSum) : 1;
+        for (let i = 0; i < computedWidths.length; i++) {
+          if (computedWidths[i] > 0) computedWidths[i] = Math.max(NON_PART_MIN * 0.7, computedWidths[i] * scaleF);
+        }
+        remaining = cw - computedWidths.reduce((s, w) => s + (w > 0 ? w : 0), 0);
+      }
+      computedWidths[partIdx] = Math.max(PART_MIN, remaining);
     } else {
+      // No Particulars column: distribute any leftover to the last text column.
       const lastTextIdx = customCols.reduce((acc, c, idx) => c.kind === "text" ? idx : acc, customCols.length - 1);
-      computedWidths[lastTextIdx] = Math.max(computedWidths[lastTextIdx], computedWidths[lastTextIdx] + remaining);
+      if (remaining > 0) computedWidths[lastTextIdx] += remaining;
     }
 
     (colWidths as any).length = 0;
@@ -1099,7 +1143,8 @@ export async function exportProfessionalPDF(
       const plainParticulars = getPlainText(row.cells.particulars || "");
       doc.setFont("times", "bold");
       doc.setFontSize(fontSize);
-      const lines = doc.splitTextToSize(plainParticulars, colWidths[1] - 4);
+      const partColW = (typeof colWidths[1] === "number" && colWidths[1] > 0) ? colWidths[1] : 40;
+      const lines = doc.splitTextToSize(plainParticulars, partColW - 4);
       const lineSpacing = fontSize * 0.405;
       const capHeight = fontSize * 0.25;
       const textHeight = heightOf(lines.length, lineSpacing, capHeight);
@@ -1117,11 +1162,18 @@ export async function exportProfessionalPDF(
       const rate = parseFloat(row.cells.rate) || 0;
       const amount = parseFloat(row.cells.amount) || 0;
 
-      const srLines = doc.splitTextToSize(String(row.cells.sr || index + 1), colWidths[0] - 2);
-      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, colWidths[2] - 3) : [];
-      const qtyLines = !isLSRow ? doc.splitTextToSize(quantity > 0 ? pdfNumber(quantity) : "\u2014", colWidths[3] - 3) : [];
-      const rateLines = !isLSRow ? doc.splitTextToSize(rate > 0 ? pdfNumber(rate) : "\u2014", colWidths[4] - 3) : [];
-      const amtLines = doc.splitTextToSize(amount > 0 ? pdfCurrency(amount) : "\u2014", colWidths[5] - 3);
+      // Safe column width lookup — custom tables may have fewer than 6 columns,
+      // so guard against undefined widths that would otherwise produce NaN and
+      // break splitTextToSize / doc.text ("Invalid arguments passed to jsPDF.text").
+      const cw = (i: number, fallback: number) => {
+        const w = colWidths[i];
+        return (typeof w === "number" && !isNaN(w) && w > 0) ? w : fallback;
+      };
+      const srLines = doc.splitTextToSize(String(row.cells.sr || index + 1), cw(0, 12) - 2);
+      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, cw(2, 20) - 3) : [];
+      const qtyLines = !isLSRow ? doc.splitTextToSize(quantity > 0 ? pdfNumber(quantity) : "\u2014", cw(3, 16) - 3) : [];
+      const rateLines = !isLSRow ? doc.splitTextToSize(rate > 0 ? pdfNumber(rate) : "\u2014", cw(4, 16) - 3) : [];
+      const amtLines = doc.splitTextToSize(amount > 0 ? pdfCurrency(amount) : "\u2014", cw(5, 22) - 3);
 
       // Row height fits the tallest cell across all columns.
       const maxTextHeight = Math.max(
@@ -1143,10 +1195,10 @@ export async function exportProfessionalPDF(
           doc.setFont("times", "normal");
           doc.setFontSize(nfs);
           subRowsData = subs.map(sub => {
-            const subPartLines = doc.splitTextToSize(sub.particulars || "", colWidths[1] - 4);
+            const subPartLines = doc.splitTextToSize(sub.particulars || "", partColW - 4);
             const subSizeRaw = sub.size || "";
             const subSizeStr = (!isLSRow && applyInch && subSizeRaw) ? convertAllPointValues(subSizeRaw) : subSizeRaw;
-            const subSizeLines = subSizeStr ? doc.splitTextToSize(subSizeStr, colWidths[2] - 3) : [];
+            const subSizeLines = subSizeStr ? doc.splitTextToSize(subSizeStr, ((typeof colWidths[2] === "number" && colWidths[2] > 0) ? colWidths[2] : 20) - 3) : [];
             const subH = Math.max(
               heightOf(subPartLines.length, nLineSpacing, nCapHeight),
               heightOf(subSizeLines.length, nLineSpacing, nCapHeight)
@@ -1265,19 +1317,22 @@ export async function exportProfessionalPDF(
         const customBold = m.isBold;
         doc.setFontSize(nfs);
         table.columns.forEach((c, ci) => {
-          const rawVal = m.row.cells[c.id] ?? "";
-          let valStr = rawVal;
+          let rawVal = m.row.cells[c.id] ?? "";
           const isPartCol = c.label.toLowerCase().includes("particular") || ci === 1;
+          // A bare "0" in a number column means "not filled" — show it blank.
+          if (c.kind === "number" && rawVal.trim() === "0") rawVal = "";
+          let valStr = rawVal;
+          // Only format as a number when the WHOLE value is a clean number.
+          // Values like "15000/NOS" are shown exactly as typed. Empty cells stay blank.
+          const isPureNumber = rawVal.trim() !== "" && /^-?\d+(\.\d+)?$/.test(rawVal.trim());
           if (c.label.toLowerCase().includes("size") || c.id === "size") {
             const applyInchM = (table.mode ?? "template") !== "manual";
             valStr = applyInchM && rawVal ? convertAllPointValues(rawVal) : rawVal;
-          } else if (c.kind === "number") {
-            const num = parseFloat(rawVal) || 0;
-            if (c.label.toLowerCase().includes("amount")) {
-              valStr = num > 0 ? pdfCurrency(num) : "\u2014";
-            } else {
-              valStr = num > 0 ? pdfNumber(num) : "\u2014";
-            }
+          } else if (c.kind === "number" && isPureNumber) {
+            const num = parseFloat(rawVal);
+            valStr = c.label.toLowerCase().includes("amount") ? pdfCurrency(num) : pdfNumber(num);
+          } else {
+            valStr = rawVal; // verbatim text (or empty)
           }
           const cX = (verticalX[ci] + verticalX[ci + 1]) / 2;
           const alignOpt = isPartCol ? (align === "right" ? "right" : align === "center" ? "center" : "left") : "center";
@@ -1286,15 +1341,17 @@ export async function exportProfessionalPDF(
           if (isPartCol) {
             // Use rich text rendering for Particulars column
             const plainVal = getPlainText(rawVal || "");
-            const lines = doc.splitTextToSize(plainVal || "\u2014", Math.max(colWidths[ci] - 3, 5));
+            if (plainVal.trim() === "") return; // nothing to draw for empty particulars
+            const lines = doc.splitTextToSize(plainVal, Math.max(colWidths[ci] - 3, 5));
             const segments = parseRichText(rawVal || "");
             lines.forEach((line: string, lineIdx: number) => {
               const lineY = baselineFor(lines.length, nLineSpacing, nCapHeight) + lineIdx * nLineSpacing;
               drawRichLine(doc, line, segments, plainVal, drawPosX, lineY, nfs, alignOpt as any);
             });
           } else {
+            if (valStr.trim() === "") return; // leave empty cells blank (no em-dash)
             doc.setFont("times", "normal");
-            const lines = doc.splitTextToSize(valStr || "\u2014", Math.max(colWidths[ci] - 3, 5));
+            const lines = doc.splitTextToSize(valStr, Math.max(colWidths[ci] - 3, 5));
             doc.text(lines, drawPosX, baselineFor(lines.length, nLineSpacing, nCapHeight), { align: alignOpt });
           }
         });
@@ -1391,7 +1448,10 @@ export async function exportProfessionalPDF(
       drawRowVerticals(yTop, yPos, isLS);
     });
 
-    // In-table Total row(s).
+    // In-table Total row(s). For the custom format this can be turned off per table.
+    if (isCustomFormat && table.showTableTotal === false) {
+      return subtotal;
+    }
     const totalRowH = minRowHeight * scale;
     if (!compressed && yPos + totalRowH > pageBottom) { doc.addPage(); yPos = 20; }
     const totalTop = yPos;
@@ -1710,10 +1770,14 @@ export async function exportProfessionalExcel(
 
       table.rows.forEach(row => {
         const rowVals = cols.map(c => {
-          const v = row.cells[c.id] ?? "";
-          if (c.kind === "number") {
+          let v = row.cells[c.id] ?? "";
+          if (c.kind === "number" && v.trim() === "0") v = ""; // bare 0 = not filled
+          // Only format as a number when the WHOLE value is a clean number;
+          // otherwise show exactly what was typed (e.g. "15000/NOS").
+          const isPureNumber = v.trim() !== "" && /^-?\d+(\.\d+)?$/.test(v.trim());
+          if (c.kind === "number" && isPureNumber) {
             const num = parseFloat(v);
-            return !isNaN(num) ? (c.label.toLowerCase().includes("amount") ? `${formatIndianNumber(num)}/-` : num) : v;
+            return c.label.toLowerCase().includes("amount") ? `${formatIndianNumber(num)}/-` : num;
           }
           return v;
         });
@@ -1721,21 +1785,23 @@ export async function exportProfessionalExcel(
         dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
       });
 
-      const totRow = cols.map((col, idx) => {
-        if (col.kind === "number") {
-          const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[col.id]) || 0), 0);
-          return `${formatIndianNumber(colSum)}/-`;
-        }
-        return idx === 0 ? "Total" : "";
-      });
-      const tr = ws.addRow(totRow);
-      tr.eachCell((c, colNum) => {
-        if (cols[colNum - 1]?.kind === "number" || colNum === 1) {
-          c.font = { bold: true };
-          c.border = cellBorder;
-          c.alignment = { horizontal: "center" };
-        }
-      });
+      if (table.showTableTotal !== false) {
+        const totRow = cols.map((col, idx) => {
+          if (col.kind === "number") {
+            const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[col.id]) || 0), 0);
+            return `${formatIndianNumber(colSum)}/-`;
+          }
+          return idx === 0 ? "Total" : "";
+        });
+        const tr = ws.addRow(totRow);
+        tr.eachCell((c, colNum) => {
+          if (cols[colNum - 1]?.kind === "number" || colNum === 1) {
+            c.font = { bold: true };
+            c.border = cellBorder;
+            c.alignment = { horizontal: "center" };
+          }
+        });
+      }
       addSpacer();
       return;
     }
@@ -2022,32 +2088,42 @@ export async function exportProfessionalWord(
 
       table.rows.forEach((row) => {
         const cells = cols.map(c => {
-          const val = row.cells[c.id] ?? "";
+          let val = row.cells[c.id] ?? "";
           const isNum = c.kind === "number";
-          const numVal = parseFloat(val);
-          const displayVal = isNum && !isNaN(numVal) ? (c.label.toLowerCase().includes("amount") ? formatIndianCurrency(numVal) : pdfNumber(numVal)) : val;
+          if (isNum && val.trim() === "0") val = ""; // bare 0 = not filled
+          // Only format when the whole value is a clean number; else verbatim.
+          const isPureNumber = val.trim() !== "" && /^-?\d+(\.\d+)?$/.test(val.trim());
+          const displayVal = isNum && isPureNumber
+            ? (c.label.toLowerCase().includes("amount") ? formatIndianCurrency(parseFloat(val)) : pdfNumber(parseFloat(val)))
+            : val;
+          const isPartCol = c.label.toLowerCase().includes("particular") || c.id === "particulars";
           return new TableCell({
-            children: [new Paragraph({ children: [new TextRun({ text: displayVal })], alignment: isNum ? AlignmentType.RIGHT : AlignmentType.LEFT })],
+            children: [new Paragraph({
+              children: isPartCol ? richTextToDocxRuns(val) : [new TextRun({ text: displayVal })],
+              alignment: isNum ? AlignmentType.RIGHT : AlignmentType.LEFT
+            })],
             width: { size: colWidth, type: WidthType.PERCENTAGE }
           });
         });
         tableRows.push(new TableRow({ children: cells }));
       });
 
-      const totalCells = cols.map((c, idx) => {
-        if (c.kind === "number") {
-          const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[c.id]) || 0), 0);
+      if (table.showTableTotal !== false) {
+        const totalCells = cols.map((c, idx) => {
+          if (c.kind === "number") {
+            const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[c.id]) || 0), 0);
+            return new TableCell({
+              children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(colSum)}/-`, bold: true })], alignment: AlignmentType.RIGHT })],
+              width: { size: colWidth, type: WidthType.PERCENTAGE }
+            });
+          }
           return new TableCell({
-            children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(colSum)}/-`, bold: true })], alignment: AlignmentType.RIGHT })],
+            children: [new Paragraph({ children: [new TextRun({ text: idx === 0 ? "Total" : "", bold: true })] })],
             width: { size: colWidth, type: WidthType.PERCENTAGE }
           });
-        }
-        return new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: idx === 0 ? "Total" : "", bold: true })] })],
-          width: { size: colWidth, type: WidthType.PERCENTAGE }
         });
-      });
-      tableRows.push(new TableRow({ children: totalCells }));
+        tableRows.push(new TableRow({ children: totalCells }));
+      }
 
       children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
       return;

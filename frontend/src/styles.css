@@ -557,7 +557,7 @@ input:focus, textarea:focus, select:focus {
 .billTable tbody tr:hover { background: #eff6ff; }
 
 .billTable tbody td {
-  padding: 6px 8px;
+  padding: 2px 8px;
   vertical-align: middle;
   color: #334155;
 }
@@ -570,7 +570,7 @@ input:focus, textarea:focus, select:focus {
   width: 100%;
   border: 1px solid transparent;
   border-radius: 5px;
-  padding: 5px 7px;
+  padding: 3px 7px;
   font-size: 13px;
   background: transparent;
   color: inherit;
@@ -1142,7 +1142,7 @@ input:focus, textarea:focus, select:focus {
 .tdCenter { text-align: center; font-weight: 600; color: #475569; }
 .tdRight { text-align: right; padding-right: 8px; }
 .sizeCalc { display: block; text-align: right; color: #6b7280; font-size: 10px; padding-right: 4px; }
-.sizeHint { display: block; font-size: 10px; color: #6b7280; padding: 2px 4px 0; line-height: 1.4; }
+.sizeHint { display: block; font-size: 10px; color: #6b7280; padding: 0 4px 0; line-height: 1.25; }
 .tfootTotal td { background: #f1f5f9; padding: 7px 6px; border-top: 2px solid #1e293b; }
 .totalAmt { font-size: 14px; color: #1e293b; }
 .tfootBalance td { background: #dcfce7; padding: 7px 6px; border-top: 1px solid #16a34a; }
@@ -1912,17 +1912,32 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-top: 2px;
+  margin-top: 1px;
 }
+
+/* Size cell: mode button on the left, size input + hint stacked on the right */
+.sizeCellLayout {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sizeCellContent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.sizeCellContent .sizeHint { margin-top: 0; }
+
 .rowModeBtn {
-  width: 18px;
-  height: 18px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: 6px;
   border: 1px solid;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;

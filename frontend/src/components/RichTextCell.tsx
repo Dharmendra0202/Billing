@@ -149,9 +149,14 @@ export function toggleBoldSelection(): void {
   }
   if (!host) return;
 
-  // The Bold button suppresses its own mousedown, so the selection is still
-  // live — but make sure the host is the active element before execCommand.
-  if (document.activeElement !== host) host.focus({ preventScroll: true });
+  // Preserve the exact selection range, because focusing the host can collapse
+  // the caret and make execCommand("bold") a no-op.
+  const savedRange = sel.getRangeAt(0).cloneRange();
+  if (document.activeElement !== host) {
+    host.focus({ preventScroll: true });
+    sel.removeAllRanges();
+    sel.addRange(savedRange);
+  }
 
   applyBold();
   host.dispatchEvent(new Event("input", { bubbles: true }));
