@@ -54,57 +54,100 @@ function registerRupeeFont(doc: jsPDF): void {
 // ============================================
 
 type RichSegment = { text: string; bold: boolean };
+type RichLine = RichSegment[]; // A single visual line, potentially with mixed bold/normal runs
 
 /**
- * Parse an HTML string containing only <b> tags into segments.
- * E.g. "Main <b>Platform</b> Framing" →
- *   [{text:"Main ", bold:false}, {text:"Platform", bold:true}, {text:" Framing", bold:false}]
+ * Parse HTML into a flat array of rich segments (single-line, no <br> handling).
+ * Kept for backward compatibility with the older table rendering code.
+ * For multi-line content use parseRichLines() instead.
  */
 function parseRichText(html: string): RichSegment[] {
-  if (!html) return [{ text: "", bold: false }];
-  const segments: RichSegment[] = [];
-  // Split by <b> and </b> tags
-  const parts = html.split(/<\/?b>/gi);
-  // Odd-indexed parts (0-based) are inside <b>...</b>
-  // We need to track open/close: content between <b> and </b> is bold.
-  let inBold = false;
-  let remaining = html;
-  
-  while (remaining.length > 0) {
-    const openIdx = remaining.indexOf("<b>");
-    const openIdxUpper = remaining.indexOf("<B>");
-    const nextOpen = openIdx === -1 ? openIdxUpper : (openIdxUpper === -1 ? openIdx : Math.min(openIdx, openIdxUpper));
-    
-    if (nextOpen === -1) {
-      // No more bold tags — rest is plain
-      const text = stripTags(remaining);
-      if (text) segments.push({ text, bold: false });
-      break;
+  const lines = parseRichLines(html);
+  // Flatten — join lines with a newline segment (used only by legacy code)
+  const flat: RichSegment[] = [];
+  lines.forEach((line, i) => {
+    if (i > 0) flat.push({ text: "\n", bold: false });
+    flat.push(...line);
+  });
+  return flat.length > 0 ? flat : [{ text: "", bold: false }];
+}
+
+/**
+ * Parse HTML into an array of visual lines, where each line is a list of
+ * bold/normal segments. Uses the browser DOM for robust parsing, so it handles
+ * arbitrary tags, nesting, inline font-weight styles, and <br> line breaks
+ * consistently.
+ */
+function parseRichLines(html: string): RichLine[] {
+  if (!html) return [[]];
+
+  if (typeof document === "undefined") return parseRichLinesRegex(html);
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+
+  const lines: RichLine[] = [[]];
+  let currentLine = lines[0];
+
+  const walk = (node: Node, bold: boolean): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || "";
+      if (text.length > 0) currentLine.push({ text, bold });
+      return;
     }
-    
-    // Text before the <b> tag
-    if (nextOpen > 0) {
-      const text = stripTags(remaining.substring(0, nextOpen));
-      if (text) segments.push({ text, bold: false });
+    if (!(node instanceof HTMLElement)) return;
+
+    const tag = node.tagName.toLowerCase();
+    if (tag === "br") {
+      currentLine = [];
+      lines.push(currentLine);
+      return;
     }
-    
-    // Find matching </b>
-    const afterOpen = remaining.substring(nextOpen + 3);
-    const closeIdx = afterOpen.search(/<\/b>/i);
-    
-    if (closeIdx === -1) {
-      // Unclosed <b> — treat rest as bold
-      const text = stripTags(afterOpen);
-      if (text) segments.push({ text, bold: true });
-      break;
+
+    let nextBold = bold;
+    if (tag === "b" || tag === "strong") nextBold = true;
+    const fw = (node.style?.fontWeight || "").toString().toLowerCase();
+    if (fw) {
+      const numeric = parseInt(fw, 10);
+      if (fw === "bold" || fw === "bolder" || (!isNaN(numeric) && numeric >= 600)) nextBold = true;
+      else if (fw === "normal" || fw === "lighter" || (!isNaN(numeric) && numeric < 600)) nextBold = false;
     }
-    
-    const boldText = stripTags(afterOpen.substring(0, closeIdx));
-    if (boldText) segments.push({ text: boldText, bold: true });
-    remaining = afterOpen.substring(closeIdx + 4);
-  }
-  
-  return segments.length > 0 ? segments : [{ text: stripTags(html), bold: false }];
+
+    const isBlock = tag === "div" || tag === "p";
+    if (isBlock && currentLine.length > 0) {
+      currentLine = [];
+      lines.push(currentLine);
+    }
+    node.childNodes.forEach(child => walk(child, nextBold));
+  };
+
+  container.childNodes.forEach(child => walk(child, false));
+  return lines;
+}
+
+/** Node-only fallback: regex-based parser for tests. */
+function parseRichLinesRegex(html: string): RichLine[] {
+  const lines: RichLine[] = [[]];
+  let cur = lines[0];
+  const parts = html.split(/<br\s*\/?>/gi);
+  parts.forEach((part, i) => {
+    if (i > 0) { cur = []; lines.push(cur); }
+    let rem = part;
+    while (rem.length > 0) {
+      const m = rem.match(/<b>([\s\S]*?)<\/b>/i);
+      if (!m || m.index === undefined) {
+        const text = rem.replace(/<[^>]*>/g, "");
+        if (text) cur.push({ text, bold: false });
+        break;
+      }
+      const before = rem.substring(0, m.index).replace(/<[^>]*>/g, "");
+      if (before) cur.push({ text: before, bold: false });
+      const bold = m[1].replace(/<[^>]*>/g, "");
+      if (bold) cur.push({ text: bold, bold: true });
+      rem = rem.substring(m.index + m[0].length);
+    }
+  });
+  return lines;
 }
 
 /** Strip all HTML tags from a string */
@@ -112,27 +155,132 @@ function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, "");
 }
 
-/** Get plain text from HTML (strips tags) */
+/** Get plain text from HTML (converts <br> to newlines, then strips other tags) */
 function getPlainText(html: string): string {
-  return stripTags(html);
+  if (!html) return "";
+  const withBreaks = html.replace(/<br\s*\/?>/gi, "\n");
+  return stripTags(withBreaks);
 }
 
 /**
- * Draw a single line of text with mixed bold/normal segments.
- * `line` is the plain-text content of one wrapped line.
- * `segments` is the full list of rich segments for the entire cell.
- * `fullPlain` is the full plain text (used to map line position back to segments).
+ * Draw a pre-computed run of rich segments on a single visual line at (x, y).
+ * Segments are drawn in order; alignment shifts the whole run.
  */
-function drawRichLine(
-  doc: any, line: string, segments: RichSegment[], fullPlain: string,
+function drawRichSegments(
+  doc: any, segments: RichSegment[],
   x: number, y: number, fontSize: number, align: "left" | "center" | "right"
 ): void {
-  // Guard against invalid inputs that make jsPDF.text throw "Invalid arguments".
+  if (segments.length === 0) return;
+  const safeX = (typeof x === "number" && !isNaN(x)) ? x : 0;
+  const safeY = (typeof y === "number" && !isNaN(y)) ? y : 0;
+
+  // Measure total width for center/right alignment
+  let totalWidth = 0;
+  for (const seg of segments) {
+    if (!seg.text) continue;
+    doc.setFont("times", seg.bold ? "bold" : "normal");
+    doc.setFontSize(fontSize);
+    totalWidth += doc.getTextWidth(seg.text);
+  }
+
+  let curX = safeX;
+  if (align === "right") curX = safeX - totalWidth;
+  else if (align === "center") curX = safeX - totalWidth / 2;
+
+  for (const seg of segments) {
+    if (!seg.text) continue;
+    doc.setFont("times", seg.bold ? "bold" : "normal");
+    doc.setFontSize(fontSize);
+    doc.text(seg.text, curX, safeY, { align: "left" });
+    curX += doc.getTextWidth(seg.text);
+  }
+}
+
+/**
+ * Word-wrap a rich line into visual rows that fit `maxWidth`, keeping bold
+ * information attached to each token. Uses jsPDF's splitTextToSize per-segment
+ * for measurement but preserves per-token bold state.
+ */
+function wrapRichLine(doc: any, line: RichLine, maxWidth: number, fontSize: number): RichLine[] {
+  if (line.length === 0) return [[]];
+
+  // Tokenize each segment into words + spaces so wrapping works cleanly
+  type Token = { text: string; bold: boolean; width: number; isSpace: boolean };
+  const tokens: Token[] = [];
+  for (const seg of line) {
+    if (!seg.text) continue;
+    // Split by whitespace but keep it — /(\s+)/ produces alternating text/whitespace
+    const parts = seg.text.split(/(\s+)/).filter(p => p.length > 0);
+    for (const p of parts) {
+      doc.setFont("times", seg.bold ? "bold" : "normal");
+      doc.setFontSize(fontSize);
+      tokens.push({ text: p, bold: seg.bold, width: doc.getTextWidth(p), isSpace: /^\s+$/.test(p) });
+    }
+  }
+
+  const rows: RichLine[] = [];
+  let curRow: RichSegment[] = [];
+  let curWidth = 0;
+
+  const flushRow = () => {
+    // Trim trailing spaces
+    while (curRow.length > 0 && /^\s+$/.test(curRow[curRow.length - 1].text)) curRow.pop();
+    rows.push(curRow);
+    curRow = [];
+    curWidth = 0;
+  };
+
+  for (const tok of tokens) {
+    if (curWidth + tok.width <= maxWidth || curRow.length === 0) {
+      curRow.push({ text: tok.text, bold: tok.bold });
+      curWidth += tok.width;
+    } else {
+      // Doesn't fit — new row (skip leading space on new row)
+      flushRow();
+      if (!tok.isSpace) {
+        curRow.push({ text: tok.text, bold: tok.bold });
+        curWidth += tok.width;
+      }
+    }
+  }
+  if (curRow.length > 0) flushRow();
+  return rows.length > 0 ? rows : [[]];
+}
+
+/**
+ * Draw multi-line rich HTML at (x, y). Handles <br> line breaks, bold segments,
+ * and word-wrapping. Returns the y-coordinate after the last drawn line.
+ */
+function drawRichHtml(
+  doc: any, html: string,
+  x: number, y: number, maxWidth: number, lineHeight: number, fontSize: number,
+  align: "left" | "center" | "right" = "left"
+): number {
+  const lines = parseRichLines(html);
+  let curY = y;
+  for (const line of lines) {
+    const wrapped = wrapRichLine(doc, line, maxWidth, fontSize);
+    for (const row of wrapped) {
+      drawRichSegments(doc, row, x, curY, fontSize, align);
+      curY += lineHeight;
+    }
+  }
+  return curY;
+}
+
+/**
+ * LEGACY: drawRichLine kept for backwards compatibility with the table
+ * rendering code that still uses the old (line, segments, fullPlain) signature.
+ * It now delegates to drawRichSegments after building segments for just the line.
+ */
+function drawRichLine(
+  doc: any, line: string, segments: RichSegment[], _fullPlain: string,
+  x: number, y: number, fontSize: number, align: "left" | "center" | "right"
+): void {
   const safeLine = typeof line === "string" ? line : String(line ?? "");
   const safeX = (typeof x === "number" && !isNaN(x)) ? x : 0;
   const safeY = (typeof y === "number" && !isNaN(y)) ? y : 0;
 
-  // If no bold segments exist, just draw normally
   const hasBold = segments.some(s => s.bold);
   if (!hasBold) {
     doc.setFont("times", "normal");
@@ -141,26 +289,21 @@ function drawRichLine(
     return;
   }
 
-  // Find where this line starts in the full plain text
+  // Build lineSegments by mapping characters against the concatenated segment text.
+  const fullPlain = segments.map(s => s.text).join("");
   const lineStart = fullPlain.indexOf(safeLine);
   if (lineStart === -1) {
-    // Fallback: draw as normal
     doc.setFont("times", "normal");
     doc.setFontSize(fontSize);
     doc.text(safeLine, safeX, safeY, { align });
     return;
   }
 
-  // Map character positions to bold state
-  let charIdx = 0;
   const charBold: boolean[] = [];
   for (const seg of segments) {
-    for (let i = 0; i < seg.text.length; i++) {
-      charBold[charIdx++] = seg.bold;
-    }
+    for (let i = 0; i < seg.text.length; i++) charBold.push(seg.bold);
   }
 
-  // Extract segments for this specific line
   const lineSegments: RichSegment[] = [];
   let i = lineStart;
   const lineEnd = lineStart + safeLine.length;
@@ -174,43 +317,26 @@ function drawRichLine(
     if (segText) lineSegments.push({ text: segText, bold });
   }
 
-  // For left alignment, draw each segment sequentially
-  if (align === "left") {
-    let curX = safeX;
-    for (const seg of lineSegments) {
-      doc.setFont("times", seg.bold ? "bold" : "normal");
-      doc.setFontSize(fontSize);
-      doc.text(seg.text, curX, safeY, { align: "left" });
-      curX += doc.getTextWidth(seg.text);
-    }
-  } else {
-    // For center/right, measure total width first, then draw from calculated start
-    let totalWidth = 0;
-    for (const seg of lineSegments) {
-      doc.setFont("times", seg.bold ? "bold" : "normal");
-      doc.setFontSize(fontSize);
-      totalWidth += doc.getTextWidth(seg.text);
-    }
-    let startX = align === "right" ? safeX - totalWidth : safeX - totalWidth / 2;
-    for (const seg of lineSegments) {
-      doc.setFont("times", seg.bold ? "bold" : "normal");
-      doc.setFontSize(fontSize);
-      doc.text(seg.text, startX, safeY, { align: "left" });
-      startX += doc.getTextWidth(seg.text);
-    }
-  }
+  drawRichSegments(doc, lineSegments, safeX, safeY, fontSize, align);
 }
 
 /**
  * Convert rich HTML text to an array of docx TextRun objects for Word export.
+ * Flattens the multi-line structure — inserts line-break runs between lines.
  */
 function richTextToDocxRuns(html: string, size?: number): any[] {
-  const segments = parseRichText(html);
-  const runs = segments.map(seg => new TextRun({
-    text: seg.text || "",
-    bold: seg.bold,
-    ...(size ? { size } : {})
-  }));
+  const lines = parseRichLines(html);
+  const runs: any[] = [];
+  lines.forEach((line, i) => {
+    if (i > 0) runs.push(new TextRun({ break: 1 }));
+    for (const seg of line) {
+      runs.push(new TextRun({
+        text: seg.text || "",
+        bold: seg.bold,
+        ...(size ? { size } : {})
+      }));
+    }
+  });
   // docx throws on a Paragraph with an empty children array — guarantee one run.
   return runs.length > 0 ? runs : [new TextRun({ text: "", ...(size ? { size } : {}) })];
 }
@@ -809,13 +935,16 @@ export async function exportProfessionalPDF(
     drawRichLine(doc, clientPlain, clientSegments, clientPlain, margin, yPos, 11, "left");
     yPos += 3.8;
     if (billDetails.showClientAddress !== false) {
-      const addrPlain = getPlainText(billDetails.clientAddress || "________________");
-      const addrSegments = parseRichText(billDetails.clientAddress || "________________");
-      const addressLines = doc.splitTextToSize(addrPlain, pageWidth - 2 * margin - 40);
-      addressLines.forEach((line: string, idx: number) => {
-        drawRichLine(doc, line, addrSegments, addrPlain, margin, yPos + idx * 3.8, 11, "left");
-      });
-      yPos += addressLines.length * 3.8;
+      const addrParts = (billDetails.clientAddress || "________________").split(/<br\s*\/?>/gi);
+      for (const part of addrParts) {
+        const addrPlain = getPlainText(part);
+        const addrSegments = parseRichText(part);
+        const addressLines = doc.splitTextToSize(addrPlain, pageWidth - 2 * margin - 40);
+        addressLines.forEach((line: string, idx: number) => {
+          drawRichLine(doc, line, addrSegments, addrPlain, margin, yPos + idx * 3.8, 11, "left");
+        });
+        yPos += addressLines.length * 3.8;
+      }
     } else {
       yPos += 3.8;
     }
@@ -1511,7 +1640,12 @@ export async function exportProfessionalPDF(
 
   // Grand-total summary footprint (Total + Advance + Balance), reserved below the
   // last page group so it never gets orphaned on its own page.
-  const GRAND_SUMMARY_RESERVE = 40;
+  // Only reserve space when there's actually something to show.
+  const showAdvance = billDetails.showAdvance !== false;
+  const showBalance = billDetails.showBalance !== false;
+  const showGrandTotal = billDetails.showGrandTotal !== false;
+  const summaryCount = (showGrandTotal ? 1 : 0) + (showAdvance ? 1 : 0) + (showBalance ? 1 : 0);
+  const GRAND_SUMMARY_RESERVE = summaryCount > 0 ? 14 + summaryCount * 5 + 8 : 0;
   const noteReserve = (billDetails.showNote && billDetails.note) ? 20 : 0;
 
   // Natural (unscaled) printed height of one table.
@@ -1539,7 +1673,8 @@ export async function exportProfessionalPDF(
       rowsH += Math.max(Math.max(textHeight, sizeTextHeight) + 2.5, minRowHeight);
     });
     const labelH = (table.title && table.title.trim()) ? 7 : 0;
-    return labelH + headerHeight + rowsH + minRowHeight;
+    const totalRowH = (isCustomFormat && table.showTableTotal === false) ? 0 : minRowHeight;
+    return labelH + headerHeight + rowsH + totalRowH;
   };
 
   // Partition tables into page groups using their page numbers. A new group
@@ -1587,39 +1722,43 @@ export async function exportProfessionalPDF(
     });
   });
 
-  // Gap between the last table and the grand-total summary.
-  yPos += 14;
-
-  // Draw left-aligned totals below the tables (no box)
-  if (yPos + 25 > pageBottom) { doc.addPage(); yPos = 20; }
-  const boxX = margin;
-  const boxY = yPos;
-  const rowHeight = 4.5;
-  const labelX = boxX;
-  const valX = boxX + 45;
-  
   // Total is always shown; Advance and Balance are optional.
-  const showAdvance = billDetails.showAdvance !== false;
-  const showBalance = billDetails.showBalance !== false;
-  const showGrandTotal = billDetails.showGrandTotal !== false;
   const summaryEntries: { label: string; value: number; bold: boolean; divider: boolean }[] = [];
   if (showGrandTotal) summaryEntries.push({ label: multipleTables ? "Grand Total:" : "Total:", value: total, bold: true, divider: false });
   if (showAdvance) summaryEntries.push({ label: "Advance:", value: billDetails.advance, bold: false, divider: false });
   if (showBalance) summaryEntries.push({ label: "Balance:", value: balance, bold: true, divider: showAdvance });
 
-  summaryEntries.forEach((e, i) => {
-    const y = boxY + rowHeight * i + rowHeight * 0.7;
-    if (e.divider) {
-      doc.setLineWidth(0.15);
-      doc.line(labelX, boxY + rowHeight * i, valX, boxY + rowHeight * i);
-    }
-    doc.setFont("times", e.bold ? "bold" : "normal");
-    doc.setFontSize(9);
-    doc.text(e.label, labelX, y);
-    doc.text(pdfCurrency(e.value), valX, y, { align: "right" });
-  });
-  doc.setLineWidth(0.2);
-  yPos = boxY + rowHeight * summaryEntries.length + 8;
+  // Only add the gap + draw the summary block when there is something to show.
+  // (Avoids leaving dead vertical space when Total/Advance/Balance are all hidden.)
+  if (summaryEntries.length > 0) {
+    // Gap between the last table and the grand-total summary.
+    yPos += 14;
+
+    // Draw left-aligned totals below the tables (no box)
+    if (yPos + 25 > pageBottom) { doc.addPage(); yPos = 20; }
+    const boxX = margin;
+    const boxY = yPos;
+    const rowHeight = 4.5;
+    const labelX = boxX;
+    const valX = boxX + 45;
+
+    summaryEntries.forEach((e, i) => {
+      const y = boxY + rowHeight * i + rowHeight * 0.7;
+      if (e.divider) {
+        doc.setLineWidth(0.15);
+        doc.line(labelX, boxY + rowHeight * i, valX, boxY + rowHeight * i);
+      }
+      doc.setFont("times", e.bold ? "bold" : "normal");
+      doc.setFontSize(9);
+      doc.text(e.label, labelX, y);
+      doc.text(pdfCurrency(e.value), valX, y, { align: "right" });
+    });
+    doc.setLineWidth(0.2);
+    yPos = boxY + rowHeight * summaryEntries.length + 8;
+  } else {
+    // No summary block — just a small gap after the table.
+    yPos += 8;
+  }
 
   // Note
   if (billDetails.showNote && billDetails.note) {
@@ -1627,16 +1766,9 @@ export async function exportProfessionalPDF(
     doc.setFontSize(11);
     doc.text("Note.", margin, yPos);
     yPos += 5;
-    // Render note with inline bold support
-    const notePlain = getPlainText(billDetails.note);
-    const noteSegments = parseRichText(billDetails.note);
-    doc.setFont("times", "normal");
-    doc.setFontSize(11);
-    const noteLines = doc.splitTextToSize(notePlain, pageWidth - 40);
-    noteLines.forEach((line: string, idx: number) => {
-      drawRichLine(doc, line, noteSegments, notePlain, margin, yPos + idx * 4, 11, "left");
-    });
-    yPos += noteLines.length * 4 + 8;
+    // drawRichHtml handles bold segments + <br> line breaks + word wrap in one call.
+    yPos = drawRichHtml(doc, billDetails.note, margin, yPos, pageWidth - 40, 4, 11, "left");
+    yPos += 4;
   }
 
   // Signature

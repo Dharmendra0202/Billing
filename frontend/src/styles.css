@@ -584,6 +584,11 @@ input:focus, textarea:focus, select:focus {
   user-select: text;
   -webkit-user-select: text;
 }
+.billCellRich b, .billCellRich strong,
+.billCellRich [style*="font-weight"] {
+  font-weight: 900 !important;
+  color: #111;
+}
 .billCellRich:empty::before {
   content: attr(data-placeholder);
   color: #9ca3af;

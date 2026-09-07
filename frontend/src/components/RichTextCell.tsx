@@ -67,7 +67,10 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
     if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
       e.preventDefault();
       applyBold();
-      emitChange();
+      // The browser fires an 'input' event from execCommand which triggers
+      // handleInput → emitChange. The requestAnimationFrame is a safety net
+      // in case the input event doesn't fire (some browser quirks).
+      requestAnimationFrame(emitChange);
       return;
     }
     if (e.key === "Enter") {
@@ -88,15 +91,13 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
   };
 
   const handleBlur = () => {
-    // On blur, optionally Title-Case the content. We rewrite each text node in
-    // place so bold (<b>) and line-break (<br>) markup is preserved.
     if (titleCase && ref.current) {
       applyTitleCaseToDom(ref.current);
     }
     emitChange();
   };
 
-  return (
+  const editable = (
     <div
       ref={ref}
       className={className}
@@ -119,6 +120,8 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
       }}
     />
   );
+
+  return editable;
 }
 
 /**
@@ -159,7 +162,10 @@ export function toggleBoldSelection(): void {
   }
 
   applyBold();
-  host.dispatchEvent(new Event("input", { bubbles: true }));
+  // Delay so the DOM mutation from execCommand settles before serializing.
+  setTimeout(() => {
+    host.dispatchEvent(new Event("input", { bubbles: true }));
+  }, 0);
 }
 
 /**

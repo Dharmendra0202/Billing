@@ -671,6 +671,7 @@ export function App() {
                         value={billDetails.clientAddress}
                         onChange={val => updateDetail("clientAddress", val)}
                         placeholder="Client address"
+                        multiline
                         style={{ minHeight: 54, padding: "5px 7px", border: "1px solid #cbd5e1", borderRadius: 5 }}
                       />
                     </label>
@@ -747,6 +748,7 @@ export function App() {
                     value={billDetails.note}
                     onChange={val => updateDetail("note", val)}
                     placeholder="Payment terms, notes..."
+                    multiline
                     style={{ minHeight: 54, padding: "5px 7px", border: "1px solid #cbd5e1", borderRadius: 5 }}
                   />
                 </label>
