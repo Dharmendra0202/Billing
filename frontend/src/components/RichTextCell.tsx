@@ -63,13 +63,25 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Ctrl+B / Cmd+B toggles bold on the selected text
+    // Ctrl+B / Cmd+B toggles bold on the selected text (or entire cell if nothing selected)
     if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
       e.preventDefault();
-      applyBold();
-      // The browser fires an 'input' event from execCommand which triggers
-      // handleInput → emitChange. The requestAnimationFrame is a safety net
-      // in case the input event doesn't fire (some browser quirks).
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+        // Toggle bold on the entire cell if no text is specifically selected
+        if (ref.current) {
+          const range = document.createRange();
+          range.selectNodeContents(ref.current);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+          applyBold();
+          range.collapse(false);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+      } else {
+        applyBold();
+      }
       requestAnimationFrame(emitChange);
       return;
     }
@@ -84,9 +96,9 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
 
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
-    // Paste as plain text to avoid inheriting foreign formatting
     const text = e.clipboardData.getData("text/plain");
-    document.execCommand("insertText", false, text);
+    const withBreaks = multiline ? text.replace(/\r\n|\r|\n/g, "<br>") : text.replace(/\r\n|\r|\n/g, " ");
+    document.execCommand("insertHTML", false, withBreaks);
     emitChange();
   };
 
@@ -141,7 +153,7 @@ function applyBold(): void {
  */
 export function toggleBoldSelection(): void {
   const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  if (!sel || sel.rangeCount === 0) return;
 
   // Walk up to the contentEditable host of the selection
   let node: Node | null = sel.anchorNode;
@@ -151,6 +163,23 @@ export function toggleBoldSelection(): void {
     node = node.parentNode;
   }
   if (!host) return;
+
+  if (sel.isCollapsed) {
+    // If no specific text is highlighted, toggle bold on the entire cell
+    host.focus({ preventScroll: true });
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    applyBold();
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    setTimeout(() => {
+      host.dispatchEvent(new Event("input", { bubbles: true }));
+    }, 0);
+    return;
+  }
 
   // Preserve the exact selection range, because focusing the host can collapse
   // the caret and make execCommand("bold") a no-op.
@@ -222,7 +251,14 @@ function sanitize(html: string): string {
       if (child.nodeType === Node.TEXT_NODE) {
         const raw = (child.textContent || "").replace(/\u00a0/g, " ");
         if (!raw) return;
-        out += bold ? `<b>${escapeHtml(raw)}</b>` : escapeHtml(raw);
+        // Handle any raw newlines in text nodes
+        const rawLines = raw.split(/\r\n|\r|\n/);
+        rawLines.forEach((rLine, rIdx) => {
+          if (rIdx > 0) out += "<br>";
+          if (rLine) {
+            out += bold ? `<b>${escapeHtml(rLine)}</b>` : escapeHtml(rLine);
+          }
+        });
         return;
       }
       if (!(child instanceof HTMLElement)) return;
@@ -239,7 +275,7 @@ function sanitize(html: string): string {
         else if (fw === "normal" || fw === "lighter" || (!isNaN(numeric) && numeric < 600)) nextBold = false;
       }
 
-      const isBlock = tag === "div" || tag === "p";
+      const isBlock = tag === "div" || tag === "p" || tag === "li";
       // A block that follows existing content starts on a new line.
       if (isBlock && out && !out.endsWith("<br>")) out += "<br>";
       walk(child, nextBold);

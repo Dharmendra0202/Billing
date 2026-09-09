@@ -725,12 +725,32 @@ input:focus, textarea:focus, select:focus {
   padding: 6px 18px 12px 18px;
   background: #fff;
   font-family: "Times New Roman", Times, serif;
+  font-synthesis: weight style !important;
   color: #000;
   font-size: 12px;
   line-height: 1.4;
   flex: 1;
   min-height: 480px;
 }
+
+.previewSheet b,
+.previewSheet strong,
+.previewSheet [style*="font-weight"],
+.pbNote b,
+.pbNote strong,
+.pbClientName b,
+.pbClientName strong,
+.pbClientAddr b,
+.pbClientAddr strong,
+.pbSub b,
+.pbSub strong,
+.pbParticularsCell b,
+.pbParticularsCell strong,
+.pbTable b,
+.pbTable strong {
+  font-weight: 700 !important;
+}
+
 
 /* ── Export Buttons ─────────────────────────────────────────────────────────── */
 .exportButtons {

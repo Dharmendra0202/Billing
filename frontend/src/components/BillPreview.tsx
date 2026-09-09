@@ -89,7 +89,7 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
       ? section.customRows
       : section.rows.map(r => ({
           id: r.id,
-          cells: { sr: String(r.sr), particulars: r.particulars, amount: String(r.amount) }
+          cells: { sr: String(r.sr), particulars: r.particulars, amount: String(r.amount), bold: String(r.bold || false) }
         }));
 
     const getColAlign = (col: { id: string; label: string; kind: string }) => {
@@ -147,8 +147,9 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                     ? (col.label.toLowerCase().includes("amount") ? money(numVal) : formatNumber(numVal))
                     : val;
                   const align = getColAlign(col);
+                  const isPartCol = col.label.toLowerCase().includes("particular") || col.id === "particulars";
                   return (
-                    <td key={col.id} style={{ textAlign: align }}>
+                    <td key={col.id} style={{ textAlign: align, fontWeight: (r.cells.bold === "true" || (r as any).bold) ? "bold" : undefined }}>
                       {isSizeCol && val ? (() => {
                         const { original, converted } = convertSizeDisplay(val, applyInch);
                         return (
@@ -159,7 +160,9 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                             )}
                           </>
                         );
-                      })() : (displayVal !== "" ? displayVal : "")}
+                      })() : isPartCol && val ? (
+                        <span dangerouslySetInnerHTML={{ __html: val }} />
+                      ) : (displayVal !== "" ? displayVal : "")}
                     </td>
                   );
                 })}
@@ -195,11 +198,11 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
               <th className="pbThSr">{cols.sr}</th>
               <th className="pbThParticulars">{cols.particulars}</th>
               <th className="pbThSize">{cols.size}</th>
-              <th className="pbThQty">Quantity</th>
-              <th className="pbThLabourHeader">Only Labour<br />Charges</th>
-              <th className="pbThAmt">Amount</th>
-              <th className="pbThMaterialHeader">Materials with<br />Labour Charges</th>
-              <th className="pbThAmt">Amount</th>
+              <th className="pbThQty">{cols.quantity}</th>
+              <th className="pbThLabourHeader">{cols.labourCharges ?? "Only Labour Charges"}</th>
+              <th className="pbThAmt">{cols.labourAmount ?? "Amount"}</th>
+              <th className="pbThMaterialHeader">{cols.materialCharges ?? "Materials with Labour Charges"}</th>
+              <th className="pbThAmt">{cols.materialAmount ?? "Amount"}</th>
             </tr>
           </thead>
           <tbody>
@@ -216,6 +219,7 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
               const lAmt = row.labourAmount || 0;
               const mRate = row.materialRate || 0;
               const mAmt = row.materialAmount || 0;
+              const isRowBold = (row as any).bold === true || (row as any).cells?.bold === "true";
               return (
                 <tr key={row.id}>
                   <td className="pbSrCell">{row.sr}</td>
@@ -223,7 +227,8 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                     className="pbParticularsCell"
                     style={{
                       fontSize: row.fontSize ? `${row.fontSize}px` : undefined,
-                      textAlign: row.align || "left"
+                      textAlign: row.align || "left",
+                      fontWeight: isRowBold ? "bold" : undefined
                     }}
                   >
                     {row.particulars
@@ -299,6 +304,7 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
           )}
           {rows.map(row => {
             const isLS = (row.size || "").trim().toUpperCase() === "LS";
+            const isRowBold = (row as any).bold === true || (row as any).cells?.bold === "true";
             return (
             <tr key={row.id}>
               <td className="pbSrCell">{row.sr}</td>
@@ -306,7 +312,8 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                 className="pbParticularsCell"
                 style={{
                   fontSize: row.fontSize ? `${row.fontSize}px` : undefined,
-                  textAlign: row.align || "left"
+                  textAlign: row.align || "left",
+                  fontWeight: isRowBold ? "bold" : undefined
                 }}
               >
                 {row.particulars

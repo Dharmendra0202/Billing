@@ -25,6 +25,11 @@ export type ColumnLabels = {
   quantity: string;
   rate: string;
   amount: string;
+  // Labour + Material format headers (editable)
+  labourCharges?: string;
+  labourAmount?: string;
+  materialCharges?: string;
+  materialAmount?: string;
 };
 
 export type ColumnVisibility = {
@@ -51,7 +56,11 @@ export const defaultColumnLabels: ColumnLabels = {
   size: "Size",
   quantity: "Quantity",
   rate: "Rate",
-  amount: "Amount"
+  amount: "Amount",
+  labourCharges: "Only Labour Charges",
+  labourAmount: "Amount",
+  materialCharges: "Materials with Labour Charges",
+  materialAmount: "Amount"
 };
 
 export type BillRow = {

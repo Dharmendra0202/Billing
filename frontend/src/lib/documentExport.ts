@@ -16,7 +16,7 @@ import {
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
-import type { BillTable, HeaderTemplate, BillDetails, ColumnLabels, BillColumn } from "../types";
+import type { BillTable, BillRow, HeaderTemplate, BillDetails, ColumnLabels, BillColumn } from "../types";
 import { defaultColumnLabels } from "../types";
 import { TINOS_REGULAR_BASE64, TINOS_BOLD_BASE64 } from "./tinosFont";
 import { convertAllPointValues } from "./inchConversion";
@@ -78,13 +78,20 @@ function parseRichText(html: string): RichSegment[] {
  * arbitrary tags, nesting, inline font-weight styles, and <br> line breaks
  * consistently.
  */
-function parseRichLines(html: string): RichLine[] {
+/**
+ * Parse HTML into an array of visual lines, where each line is a list of
+ * bold/normal segments. Uses the browser DOM for robust parsing, so it handles
+ * arbitrary tags, nesting, inline font-weight styles, and <br> line breaks
+ * consistently.
+ */
+function parseRichLines(html: string, forceBold: boolean = false): RichLine[] {
   if (!html) return [[]];
 
-  if (typeof document === "undefined") return parseRichLinesRegex(html);
+  if (typeof document === "undefined") return parseRichLinesRegex(html, forceBold);
 
+  const normalized = html.replace(/\r\n|\r|\n/g, "<br/>");
   const container = document.createElement("div");
-  container.innerHTML = html;
+  container.innerHTML = normalized;
 
   const lines: RichLine[] = [[]];
   let currentLine = lines[0];
@@ -92,7 +99,19 @@ function parseRichLines(html: string): RichLine[] {
   const walk = (node: Node, bold: boolean): void => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent || "";
-      if (text.length > 0) currentLine.push({ text, bold });
+      if (text.length > 0) {
+        // In case any raw newlines remain in text
+        const parts = text.split(/\r\n|\r|\n/);
+        parts.forEach((p, idx) => {
+          if (idx > 0) {
+            currentLine = [];
+            lines.push(currentLine);
+          }
+          if (p.length > 0) {
+            currentLine.push({ text: p, bold: forceBold || bold });
+          }
+        });
+      }
       return;
     }
     if (!(node instanceof HTMLElement)) return;
@@ -113,41 +132,78 @@ function parseRichLines(html: string): RichLine[] {
       else if (fw === "normal" || fw === "lighter" || (!isNaN(numeric) && numeric < 600)) nextBold = false;
     }
 
-    const isBlock = tag === "div" || tag === "p";
+    const isBlock = tag === "div" || tag === "p" || tag === "li" || tag === "tr";
     if (isBlock && currentLine.length > 0) {
       currentLine = [];
       lines.push(currentLine);
     }
     node.childNodes.forEach(child => walk(child, nextBold));
+    if (isBlock && currentLine.length > 0) {
+      currentLine = [];
+      lines.push(currentLine);
+    }
   };
 
   container.childNodes.forEach(child => walk(child, false));
-  return lines;
+  while (lines.length > 1 && lines[lines.length - 1].length === 0) {
+    lines.pop();
+  }
+  return lines.length > 0 ? lines : [[]];
 }
 
 /** Node-only fallback: regex-based parser for tests. */
-function parseRichLinesRegex(html: string): RichLine[] {
+function parseRichLinesRegex(html: string, forceBold: boolean = false): RichLine[] {
   const lines: RichLine[] = [[]];
   let cur = lines[0];
-  const parts = html.split(/<br\s*\/?>/gi);
+  const normalized = html.replace(/\r\n|\r|\n/g, "<br/>");
+  const parts = normalized.split(/<br\s*\/?>/gi);
   parts.forEach((part, i) => {
     if (i > 0) { cur = []; lines.push(cur); }
     let rem = part;
     while (rem.length > 0) {
-      const m = rem.match(/<b>([\s\S]*?)<\/b>/i);
+      const m = rem.match(/<(b|strong)>([\s\S]*?)<\/\1>/i);
       if (!m || m.index === undefined) {
         const text = rem.replace(/<[^>]*>/g, "");
-        if (text) cur.push({ text, bold: false });
+        if (text) cur.push({ text, bold: forceBold || false });
         break;
       }
       const before = rem.substring(0, m.index).replace(/<[^>]*>/g, "");
-      if (before) cur.push({ text: before, bold: false });
-      const bold = m[1].replace(/<[^>]*>/g, "");
-      if (bold) cur.push({ text: bold, bold: true });
+      if (before) cur.push({ text: before, bold: forceBold || false });
+      const boldText = m[2].replace(/<[^>]*>/g, "");
+      if (boldText) cur.push({ text: boldText, bold: true });
       rem = rem.substring(m.index + m[0].length);
     }
   });
-  return lines;
+  while (lines.length > 1 && lines[lines.length - 1].length === 0) {
+    lines.pop();
+  }
+  return lines.length > 0 ? lines : [[]];
+}
+
+/**
+ * Convert rich HTML text into an ExcelJS cell value.
+ * Preserves bold formatting per word/segment or across the entire cell.
+ */
+function parseRichTextForExcel(html: string, forceBold: boolean = false): string | { richText: { text: string; font?: { bold?: boolean } }[] } {
+  if (!html) return "";
+  const lines = parseRichLines(html, forceBold);
+  const richText: { text: string; font?: { bold?: boolean } }[] = [];
+  lines.forEach((line, idx) => {
+    if (idx > 0) {
+      richText.push({ text: "\n", font: forceBold ? { bold: true } : undefined });
+    }
+    line.forEach(seg => {
+      if (seg.text) {
+        richText.push({ text: seg.text, font: (forceBold || seg.bold) ? { bold: true } : undefined });
+      }
+    });
+  });
+  if (richText.length === 0) return "";
+  const hasBold = richText.some(r => r.font && r.font.bold);
+  if (!hasBold && !forceBold) {
+    return richText.map(r => r.text).join("");
+  }
+  return { richText };
 }
 
 /** Strip all HTML tags from a string */
@@ -324,21 +380,25 @@ function drawRichLine(
  * Convert rich HTML text to an array of docx TextRun objects for Word export.
  * Flattens the multi-line structure — inserts line-break runs between lines.
  */
-function richTextToDocxRuns(html: string, size?: number): any[] {
-  const lines = parseRichLines(html);
+/**
+ * Convert rich HTML text to an array of docx TextRun objects for Word export.
+ * Flattens the multi-line structure — inserts line-break runs between lines.
+ */
+function richTextToDocxRuns(html: string, size?: number, forceBold: boolean = false): any[] {
+  const lines = parseRichLines(html, forceBold);
   const runs: any[] = [];
   lines.forEach((line, i) => {
     if (i > 0) runs.push(new TextRun({ break: 1 }));
     for (const seg of line) {
       runs.push(new TextRun({
         text: seg.text || "",
-        bold: seg.bold,
+        bold: forceBold || seg.bold,
         ...(size ? { size } : {})
       }));
     }
   });
   // docx throws on a Paragraph with an empty children array — guarantee one run.
-  return runs.length > 0 ? runs : [new TextRun({ text: "", ...(size ? { size } : {}) })];
+  return runs.length > 0 ? runs : [new TextRun({ text: "", bold: forceBold, ...(size ? { size } : {}) })];
 }
 
 // ============================================
@@ -1131,18 +1191,73 @@ export async function exportProfessionalPDF(
     for (let i = 0; i < colWidths.length; i++) { (verticalX as any).push(vx); vx += colWidths[i]; }
     (verticalX as any).push(pageWidth - margin);
   } else if (isLabourFormat) {
-    // Optimized 8-column widths so headers fit cleanly in 2 lines without splitting words
+    // Auto-measure the 8 columns so headers and values are never cut off, and
+    // the table always fits within the page. Particulars takes the leftover.
     const cw = contentWidth;
-    const srWL = 10;
-    const qtyWL = 18;
-    const sizeWL = 18;
-    const labourWL = 22;
-    const labourAmtWL = 18;
-    const matWL = 26;
-    const matAmtWL = 18;
-    const partWL = cw - (srWL + sizeWL + qtyWL + labourWL + labourAmtWL + matWL + matAmtWL);
-    (colWidths as any).length = 0;
-    [srWL, partWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].forEach(w => (colWidths as any).push(w));
+    const allLRows = tables.flatMap(t => t.rows);
+
+    // Header width contribution: prefer fitting the WHOLE label on one line, but
+    // cap it so very long headers (e.g. "Materials with Labour Charges") wrap
+    // instead of stretching the column. `cap` is the column's own max width.
+    const headerWidth = (label: string, cap: number): number => {
+      doc.setFont("times", "bold");
+      doc.setFontSize(9.5);
+      const full = doc.getTextWidth(label || "");
+      const longestWord = (label || "").split(/\s+/).reduce((w, word) => Math.max(w, doc.getTextWidth(word)), 0);
+      // Never below the longest single word (avoids mid-word cut), never above the cap.
+      return Math.min(Math.max(full, longestWord), cap);
+    };
+    // Widest formatted value in a column across all rows.
+    const widestValue = (fmt: (r: BillRow) => string): number => {
+      doc.setFont("times", "normal");
+      doc.setFontSize(11);
+      return allLRows.reduce((w, r) => Math.max(w, doc.getTextWidth(fmt(r))), 0);
+    };
+
+    const lRate = (r: BillRow) => { const v = parseFloat(r.cells.labourRate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
+    const lAmt  = (r: BillRow) => { const v = parseFloat(r.cells.labourAmount) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
+    const mRate = (r: BillRow) => { const v = parseFloat(r.cells.materialRate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
+    const mAmt  = (r: BillRow) => { const v = parseFloat(r.cells.materialAmount) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
+    const applyInch0 = (tables[0]?.mode ?? "template") !== "manual";
+    const sizeVal = (r: BillRow) => { const s = (r.cells.size || "").trim(); if (s.toUpperCase() === "LS") return ""; return (applyInch0 && s ? convertAllPointValues(s) : s); };
+    const qtyVal = (r: BillRow) => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; };
+    const srVal = (r: BillRow) => String(r.cells.sr || "");
+
+    // Include table subtotals so amount columns fit the Total row too.
+    const lSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0));
+    const mSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.materialAmount) || 0), 0));
+    doc.setFont("times", "normal"); doc.setFontSize(11);
+    // Row amounts are plain numbers; only the Total row uses ₹, so measure both
+    // and take the wider so the Total still fits.
+    const widestLSub = lSubtotals.reduce((w, s) => Math.max(w, doc.getTextWidth(pdfCurrency(s))), 0);
+    const widestMSub = mSubtotals.reduce((w, s) => Math.max(w, doc.getTextWidth(pdfCurrency(s))), 0);
+
+    const PAD = 5;
+    const clamp = (v: number, min: number, max: number) => Math.max(Math.min(v, max), min);
+
+    const srWL   = clamp(Math.max(headerWidth(columns.sr, 18), widestValue(srVal)) + PAD, 11, 18);
+    // Size must comfortably fit values like "6.25 x 5.25" on one line.
+    const sizeWL = clamp(Math.max(headerWidth(columns.size, 30), widestValue(sizeVal)) + PAD, 20, 32);
+    const qtyWL  = clamp(Math.max(headerWidth(columns.quantity, 24), widestValue(qtyVal)) + PAD, 15, 24);
+    const labourWL    = clamp(Math.max(headerWidth(columns.labourCharges ?? "Only Labour Charges", 26), widestValue(lRate)) + PAD, 15, 26);
+    const labourAmtWL = clamp(Math.max(headerWidth(columns.labourAmount ?? "Amount", 26), widestValue(lAmt), widestLSub) + PAD, 16, 28);
+    const matWL       = clamp(Math.max(headerWidth(columns.materialCharges ?? "Materials with Labour Charges", 26), widestValue(mRate)) + PAD, 15, 26);
+    const matAmtWL    = clamp(Math.max(headerWidth(columns.materialAmount ?? "Amount", 26), widestValue(mAmt), widestMSub) + PAD, 16, 28);
+
+    let fixedSum = srWL + sizeWL + qtyWL + labourWL + labourAmtWL + matWL + matAmtWL;
+    const PART_MIN = 30;
+    let partWL = cw - fixedSum;
+    if (partWL < PART_MIN) {
+      // Scale the numeric columns down proportionally so Particulars still fits.
+      const target = cw - PART_MIN;
+      const f = fixedSum > 0 ? target / fixedSum : 1;
+      const scaled = [srWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].map(w => w * f);
+      (colWidths as any).length = 0;
+      [scaled[0], PART_MIN, scaled[1], scaled[2], scaled[3], scaled[4], scaled[5], scaled[6]].forEach(w => (colWidths as any).push(w));
+    } else {
+      (colWidths as any).length = 0;
+      [srWL, partWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].forEach(w => (colWidths as any).push(w));
+    }
     // Rebuild colX and verticalX for 8 columns
     (colX as any).length = 0;
     let cumX = margin + 2;
@@ -1187,7 +1302,7 @@ export async function exportProfessionalPDF(
     const labels = customCols
       ? customCols.map(c => c.label)
       : isLabourFormat
-      ? [columns.sr, columns.particulars, columns.size, "Quantity", "Only Labour\nCharges", "Amount", "Materials with\nLabour Charges", "Amount"]
+      ? [columns.sr, columns.particulars, columns.size, columns.quantity, columns.labourCharges ?? "Only Labour Charges", columns.labourAmount ?? "Amount", columns.materialCharges ?? "Materials with Labour Charges", columns.materialAmount ?? "Amount"]
       : [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
 
     const labelLines = colWidths.map((w, i) => {
@@ -1262,21 +1377,22 @@ export async function exportProfessionalPDF(
 
     const measured = table.rows.map((row, index) => {
       const fontSize = (parseInt(row.cells.fontSize) || 11) * scale;
-      const isBold = row.cells.bold === "true";
+      const isBold = (row as any).bold === true || row.cells.bold === "true";
       const align = (row.cells.align as any) || "left";
 
       // Particulars (per-row font size / weight, wraps within its column).
-      // Parse rich text segments for inline bold; use bold font for measurement
-      // to get the widest possible text (bold is wider than normal).
+      const partColW = (typeof colWidths[1] === "number" && colWidths[1] > 0) ? colWidths[1] : 40;
+      const richLines = parseRichLines(row.cells.particulars || "", isBold);
+      const wrappedVisualRows: RichLine[] = [];
+      for (const rl of richLines) {
+        wrappedVisualRows.push(...wrapRichLine(doc, rl, partColW - 4, fontSize));
+      }
       const richSegments = parseRichText(row.cells.particulars || "");
       const plainParticulars = getPlainText(row.cells.particulars || "");
-      doc.setFont("times", "bold");
-      doc.setFontSize(fontSize);
-      const partColW = (typeof colWidths[1] === "number" && colWidths[1] > 0) ? colWidths[1] : 40;
-      const lines = doc.splitTextToSize(plainParticulars, partColW - 4);
+      const lines = wrappedVisualRows.map(r => r.map(s => s.text).join(""));
       const lineSpacing = fontSize * 0.405;
       const capHeight = fontSize * 0.25;
-      const textHeight = heightOf(lines.length, lineSpacing, capHeight);
+      const textHeight = heightOf(wrappedVisualRows.length, lineSpacing, capHeight);
 
       // Every other cell wraps too, so no value is ever clipped. Measured at 11pt.
       doc.setFont("times", "normal");
@@ -1342,6 +1458,7 @@ export async function exportProfessionalPDF(
       return {
         row, fontSize, isBold, align, isLS: isLSRow, richSegments, plainParticulars,
         lines, lineSpacing, capHeight, textHeight, maxTextHeight, naturalHeight,
+        wrappedVisualRows,
         srLines, sizeLines, qtyLines, rateLines, amtLines,
         subRowsData, totalGroupHeight
       };
@@ -1471,11 +1588,16 @@ export async function exportProfessionalPDF(
             // Use rich text rendering for Particulars column
             const plainVal = getPlainText(rawVal || "");
             if (plainVal.trim() === "") return; // nothing to draw for empty particulars
-            const lines = doc.splitTextToSize(plainVal, Math.max(colWidths[ci] - 3, 5));
-            const segments = parseRichText(rawVal || "");
-            lines.forEach((line: string, lineIdx: number) => {
-              const lineY = baselineFor(lines.length, nLineSpacing, nCapHeight) + lineIdx * nLineSpacing;
-              drawRichLine(doc, line, segments, plainVal, drawPosX, lineY, nfs, alignOpt as any);
+            const isRowBold = (m.row as any).bold === true || m.row.cells?.bold === "true";
+            const richLines = parseRichLines(rawVal || "", isRowBold);
+            const wrappedVisualRows: RichLine[] = [];
+            const colW = Math.max(colWidths[ci] - 3, 5);
+            for (const rl of richLines) {
+              wrappedVisualRows.push(...wrapRichLine(doc, rl, colW, nfs));
+            }
+            wrappedVisualRows.forEach((vRow: RichSegment[], lineIdx: number) => {
+              const lineY = baselineFor(wrappedVisualRows.length, nLineSpacing, nCapHeight) + lineIdx * nLineSpacing;
+              drawRichSegments(doc, vRow, drawPosX, lineY, nfs, alignOpt as any);
             });
           } else {
             if (valStr.trim() === "") return; // leave empty cells blank (no em-dash)
@@ -1493,16 +1615,15 @@ export async function exportProfessionalPDF(
         doc.setFontSize(nfs);
         doc.text(m.srLines, srCenterX, baselineForGroup(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
-        // Particulars — render with inline bold segments (Word/Excel style).
+        // Particulars — render with inline bold segments directly from wrappedVisualRows
         doc.setFontSize(m.fontSize);
         const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
         const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
-        const baseY = baselineFor(m.lines.length, m.lineSpacing, m.capHeight);
+        const baseY = baselineFor(m.wrappedVisualRows.length, m.lineSpacing, m.capHeight);
 
-        // For each wrapped line, render segments with correct bold/normal
-        m.lines.forEach((line: string, lineIdx: number) => {
+        m.wrappedVisualRows.forEach((vRow: RichSegment[], lineIdx: number) => {
           const lineY = baseY + lineIdx * m.lineSpacing;
-          drawRichLine(doc, line, m.richSegments, m.plainParticulars, drawX, lineY, m.fontSize, alignOpt as any);
+          drawRichSegments(doc, vRow, drawX, lineY, m.fontSize, alignOpt as any);
         });
 
         // Size / Quantity / Rate (or a single merged "LS" cell).
@@ -1526,7 +1647,7 @@ export async function exportProfessionalPDF(
             doc.text(labourRate > 0 ? pdfNumber(labourRate) : "\u2014", labourCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
             doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
             doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
-            doc.text(materialAmt > 0 ? pdfCurrency(materialAmt) : "\u2014", materialAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
+            doc.text(materialAmt > 0 ? pdfNumber(materialAmt) : "\u2014", materialAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
           } else {
             doc.text(m.rateLines, rateCenterX, baselineForGroup(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
           }
@@ -1615,7 +1736,7 @@ export async function exportProfessionalPDF(
       doc.line(verticalX[5], totalTop, verticalX[5], totalBot);
       doc.line(verticalX[6], totalTop, verticalX[6], totalBot);
       doc.text("Total", (verticalX[4] + verticalX[5]) / 2, yBaseTotal, { align: "center" });
-      doc.text(pdfNumber(labourSubtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
+      doc.text(pdfCurrency(labourSubtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
       // Material total boxes (col 6 = label "Total", col 7 = material sum)
       doc.line(verticalX[6], totalTop, verticalX[8], totalTop);
       doc.line(verticalX[6], totalBot, verticalX[8], totalBot);
@@ -1648,18 +1769,43 @@ export async function exportProfessionalPDF(
   const GRAND_SUMMARY_RESERVE = summaryCount > 0 ? 14 + summaryCount * 5 + 8 : 0;
   const noteReserve = (billDetails.showNote && billDetails.note) ? 20 : 0;
 
+  // Real printed height of the column-header row (accounts for multi-line wrapped
+  // labels, e.g. labour's "Materials with Labour Charges"). Mirrors drawTableHeader.
+  const computeHeaderBlockHeight = (scale: number = 1): number => {
+    const headerFontSize = (isLabourFormat ? 9.5 : 11) * scale;
+    doc.setFont("times", "bold");
+    doc.setFontSize(headerFontSize);
+    const customCols = isCustomFormat && tables[0]?.columns?.length ? tables[0].columns : null;
+    const labels = customCols
+      ? customCols.map(c => c.label)
+      : isLabourFormat
+      ? [columns.sr, columns.particulars, columns.size, columns.quantity, columns.labourCharges ?? "Only Labour Charges", columns.labourAmount ?? "Amount", columns.materialCharges ?? "Materials with Labour Charges", columns.materialAmount ?? "Amount"]
+      : [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
+    const labelLines = colWidths.map((w, i) => {
+      const text = labels[i] || "";
+      if (text.includes("\n")) return text.split("\n");
+      return doc.splitTextToSize(text, Math.max(w - 2, 6));
+    });
+    const maxLines = Math.max(1, ...labelLines.map(l => l.length));
+    const hLineSpacing = headerFontSize * 0.42;
+    return Math.max(headerHeight * scale, (maxLines - 1) * hLineSpacing + headerFontSize * 0.25 + 3.2 * scale);
+  };
+  const realHeaderHeight = computeHeaderBlockHeight(1);
+
   // Natural (unscaled) printed height of one table.
   const measureTableNatural = (table: BillTable): number => {
     let rowsH = 0;
     table.rows.forEach(row => {
       const fontSize = parseInt(row.cells.fontSize) || 11;
-      doc.setFont("times", "bold");
-      doc.setFontSize(fontSize);
-      const plainText = getPlainText(row.cells.particulars || "");
-      const lines = doc.splitTextToSize(plainText, colWidths[1] - 4);
+      const isBold = (row as any).bold === true || row.cells.bold === "true";
+      const richLines = parseRichLines(row.cells.particulars || "", isBold);
+      const wrappedVisualRows: RichLine[] = [];
+      for (const rl of richLines) {
+        wrappedVisualRows.push(...wrapRichLine(doc, rl, colWidths[1] - 4, fontSize));
+      }
       const lineSpacing = fontSize * 0.405;
       const capHeight = fontSize * 0.25;
-      const textHeight = (lines.length - 1) * lineSpacing + capHeight;
+      const textHeight = (Math.max(wrappedVisualRows.length, 1) - 1) * lineSpacing + capHeight;
       // Account for wrapped Size lines too.
       const sizeRawM = row.cells.size || "";
       const isLSRowM = sizeRawM.trim().toUpperCase() === "LS";
@@ -1674,16 +1820,18 @@ export async function exportProfessionalPDF(
     });
     const labelH = (table.title && table.title.trim()) ? 7 : 0;
     const totalRowH = (isCustomFormat && table.showTableTotal === false) ? 0 : minRowHeight;
-    return labelH + headerHeight + rowsH + totalRowH;
+    // Use the REAL header height (labour headers wrap to 2-3 lines).
+    return labelH + realHeaderHeight + rowsH + totalRowH;
   };
 
-  // Partition tables into page groups using their page numbers. A new group
-  // starts whenever a table's page number is higher than the previous table's.
+  // Partition tables into page groups using their page numbers. Tables that share
+  // the same page number group together on one page; whenever the page number
+  // CHANGES from the previous table, a new page (group) begins.
   const groups: BillTable[][] = [];
   tables.forEach((t, i) => {
     const thisPage = t.page ?? 1;
     const prevPage = i > 0 ? (tables[i - 1].page ?? 1) : thisPage;
-    if (i === 0 || thisPage > prevPage) groups.push([t]);
+    if (i === 0 || thisPage !== prevPage) groups.push([t]);
     else groups[groups.length - 1].push(t);
   });
 
@@ -1873,14 +2021,32 @@ export async function exportProfessionalExcel(
 
   if (billDetails.showClientDetails !== false) {
     ws.addRow(["To,"]);
-    const cn = ws.addRow([getPlainText(billDetails.clientName || "")]);
-    cn.getCell(1).font = { bold: true };
-    if (billDetails.showClientAddress !== false) ws.addRow([getPlainText(billDetails.clientAddress || "")]);
+    const clientNameVal = parseRichTextForExcel(billDetails.clientName || "", true);
+    const cn = ws.addRow([typeof clientNameVal === "string" ? clientNameVal : ""]);
+    if (typeof clientNameVal === "object") {
+      cn.getCell(1).value = clientNameVal;
+    } else {
+      cn.getCell(1).font = { bold: true };
+    }
+    if (billDetails.showClientAddress !== false) {
+      const addrVal = parseRichTextForExcel(billDetails.clientAddress || "");
+      const addrRow = ws.addRow([typeof addrVal === "string" ? addrVal : ""]);
+      if (typeof addrVal === "object") addrRow.getCell(1).value = addrVal;
+      addrRow.getCell(1).alignment = { wrapText: true };
+    }
   }
   addSpacer();
 
   if (billDetails.subject && billDetails.subject.trim()) {
-    ws.addRow([`Sub: ${getPlainText(billDetails.subject)}`]);
+    const subVal = parseRichTextForExcel(billDetails.subject);
+    const subRow = ws.addRow(["Sub: "]);
+    if (typeof subVal === "object" && "richText" in subVal) {
+      subRow.getCell(1).value = {
+        richText: [{ text: "Sub: ", font: { bold: true } }, ...subVal.richText]
+      };
+    } else {
+      subRow.getCell(1).value = `Sub: ${subVal}`;
+    }
     addSpacer();
   }
 
@@ -1901,6 +2067,7 @@ export async function exportProfessionalExcel(
       });
 
       table.rows.forEach(row => {
+        const isRowBold = (row as any).bold === true || row.cells?.bold === "true";
         const rowVals = cols.map(c => {
           let v = row.cells[c.id] ?? "";
           if (c.kind === "number" && v.trim() === "0") v = ""; // bare 0 = not filled
@@ -1914,6 +2081,21 @@ export async function exportProfessionalExcel(
           return v;
         });
         const dr = ws.addRow(rowVals);
+        cols.forEach((c, cIdx) => {
+          const isPartCol = c.label.toLowerCase().includes("particular") || c.id === "particulars";
+          if (isPartCol) {
+            const rawVal = row.cells[c.id] ?? "";
+            const richVal = parseRichTextForExcel(rawVal, isRowBold);
+            if (typeof richVal === "object") {
+              dr.getCell(cIdx + 1).value = richVal;
+            } else if (isRowBold) {
+              dr.getCell(cIdx + 1).font = { bold: true };
+            }
+            dr.getCell(cIdx + 1).alignment = { wrapText: true };
+          } else if (isRowBold) {
+            dr.getCell(cIdx + 1).font = { bold: true };
+          }
+        });
         dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
       });
 
@@ -1939,7 +2121,7 @@ export async function exportProfessionalExcel(
     }
 
     if (isLabourFormat) {
-      const hr = ws.addRow([columns.sr, columns.particulars, columns.size, columns.quantity, "Only Labour Charges", "Amount", "Materials with labour Charges", "Amount"]);
+      const hr = ws.addRow([columns.sr, columns.particulars, columns.size, columns.quantity, columns.labourCharges ?? "Only Labour Charges", columns.labourAmount ?? "Amount", columns.materialCharges ?? "Materials with Labour Charges", columns.materialAmount ?? "Amount"]);
       hr.eachCell(c => {
         c.font = { bold: true };
         c.fill = headerFill;
@@ -1948,13 +2130,14 @@ export async function exportProfessionalExcel(
       });
 
       table.rows.forEach((row, index) => {
+        const isRowBold = (row as any).bold === true || row.cells?.bold === "true";
         const lRate = parseFloat(row.cells.labourRate) || 0;
         const lAmt = parseFloat(row.cells.labourAmount) || 0;
         const mRate = parseFloat(row.cells.materialRate) || 0;
         const mAmt = parseFloat(row.cells.materialAmount) || 0;
         const dr = ws.addRow([
           row.cells.sr || String(index + 1),
-          getPlainText(row.cells.particulars || ""),
+          "",
           row.cells.size || "",
           row.cells.quantity || "",
           lRate > 0 ? lRate : "",
@@ -1962,6 +2145,17 @@ export async function exportProfessionalExcel(
           mRate > 0 ? mRate : "",
           mAmt > 0 ? `${formatIndianNumber(mAmt)}/-` : ""
         ]);
+        const richVal = parseRichTextForExcel(row.cells.particulars || "", isRowBold);
+        if (typeof richVal === "object") {
+          dr.getCell(2).value = richVal;
+        } else {
+          dr.getCell(2).value = richVal;
+          if (isRowBold) dr.getCell(2).font = { bold: true };
+        }
+        dr.getCell(2).alignment = { wrapText: true };
+        if (isRowBold) {
+          [1, 3, 4, 5, 6, 7, 8].forEach(i => { dr.getCell(i).font = { bold: true }; });
+        }
         dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
       });
 
@@ -1987,6 +2181,7 @@ export async function exportProfessionalExcel(
     });
 
     table.rows.forEach((row, index) => {
+      const isRowBold = (row as any).bold === true || row.cells?.bold === "true";
       const amtVal = parseFloat(row.cells.amount) || 0;
       const qty = parseFloat(row.cells.quantity) || 0;
       const rate = parseFloat(row.cells.rate) || 0;
@@ -1995,14 +2190,25 @@ export async function exportProfessionalExcel(
       const rateRounded = Math.round(rate * 100) / 100;
       const dr = ws.addRow([
         row.cells.sr || String(index + 1),
-        getPlainText(row.cells.particulars || ""),
+        "",
         isLS ? "LS" : (row.cells.size || ""),
         isLS ? "" : (qty > 0 ? qtyRounded : ""),
         isLS ? "" : (rate > 0 ? rateRounded : ""),
         amtVal > 0 ? `${formatIndianNumber(amtVal)}/-` : ""
       ]);
+      const richVal = parseRichTextForExcel(row.cells.particulars || "", isRowBold);
+      if (typeof richVal === "object") {
+        dr.getCell(2).value = richVal;
+      } else {
+        dr.getCell(2).value = richVal;
+        if (isRowBold) dr.getCell(2).font = { bold: true };
+      }
+      dr.getCell(2).alignment = { wrapText: true };
       dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
-      [1, 3, 4, 5, 6].forEach(i => { dr.getCell(i).alignment = { horizontal: "center" }; });
+      [1, 3, 4, 5, 6].forEach(i => {
+        dr.getCell(i).alignment = { horizontal: "center" };
+        if (isRowBold) dr.getCell(i).font = { bold: true };
+      });
       if (isLS) {
         ws.mergeCells(`C${dr.number}:E${dr.number}`);
         dr.getCell(3).alignment = { horizontal: "center" };
@@ -2041,7 +2247,10 @@ export async function exportProfessionalExcel(
   if (billDetails.showNote && billDetails.note) {
     const n = ws.addRow(["Note."]);
     n.getCell(1).font = { bold: true };
-    ws.addRow([getPlainText(billDetails.note)]);
+    const noteVal = parseRichTextForExcel(billDetails.note);
+    const noteRow = ws.addRow([typeof noteVal === "string" ? noteVal : ""]);
+    if (typeof noteVal === "object") noteRow.getCell(1).value = noteVal;
+    noteRow.getCell(1).alignment = { wrapText: true };
     addSpacer();
   }
 
@@ -2219,6 +2428,7 @@ export async function exportProfessionalWord(
       const tableRows: TableRow[] = [customHeaderRow];
 
       table.rows.forEach((row) => {
+        const isBold = (row as any).bold === true || row.cells?.bold === "true";
         const cells = cols.map(c => {
           let val = row.cells[c.id] ?? "";
           const isNum = c.kind === "number";
@@ -2231,7 +2441,7 @@ export async function exportProfessionalWord(
           const isPartCol = c.label.toLowerCase().includes("particular") || c.id === "particulars";
           return new TableCell({
             children: [new Paragraph({
-              children: isPartCol ? richTextToDocxRuns(val) : [new TextRun({ text: displayVal })],
+              children: isPartCol ? richTextToDocxRuns(val, undefined, isBold) : [new TextRun({ text: displayVal, bold: isBold })],
               alignment: isNum ? AlignmentType.RIGHT : AlignmentType.LEFT
             })],
             width: { size: colWidth, type: WidthType.PERCENTAGE }
@@ -2268,30 +2478,31 @@ export async function exportProfessionalWord(
           new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 30, type: WidthType.PERCENTAGE } }),
           new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
           new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Only Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Materials with labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } })
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.labourCharges ?? "Only Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.labourAmount ?? "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.materialCharges ?? "Materials with Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.materialAmount ?? "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } })
         ]
       });
 
       const tableRows: TableRow[] = [labourHeaderRow];
 
       table.rows.forEach((row, index) => {
+        const isBold = (row as any).bold === true || row.cells?.bold === "true";
         const lRate = parseFloat(row.cells.labourRate) || 0;
         const lAmt = parseFloat(row.cells.labourAmount) || 0;
         const mRate = parseFloat(row.cells.materialRate) || 0;
         const mAmt = parseFloat(row.cells.materialAmount) || 0;
         tableRows.push(new TableRow({
           children: [
-            new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] }),
-            new TableCell({ children: [new Paragraph({ children: richTextToDocxRuns(row.cells.particulars || "") })] }),
-            new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
-            new TableCell({ children: [new Paragraph({ text: row.cells.quantity || "", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: lRate > 0 ? pdfNumber(lRate) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: lAmt > 0 ? formatIndianCurrency(lAmt) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: mRate > 0 ? pdfNumber(mRate) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: mAmt > 0 ? formatIndianCurrency(mAmt) : "—", alignment: AlignmentType.CENTER })] })
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.sr || String(index + 1), bold: isBold })] })] }),
+            new TableCell({ children: [new Paragraph({ children: richTextToDocxRuns(row.cells.particulars || "", undefined, isBold) })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.size || "", bold: isBold })] })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.quantity || "", bold: isBold })], alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: lRate > 0 ? pdfNumber(lRate) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: lAmt > 0 ? formatIndianCurrency(lAmt) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: mRate > 0 ? pdfNumber(mRate) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: mAmt > 0 ? formatIndianCurrency(mAmt) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] })
           ]
         }));
       });
@@ -2335,7 +2546,7 @@ export async function exportProfessionalWord(
       const rateVal = parseFloat(row.cells.rate) || 0;
       const amtVal = parseFloat(row.cells.amount) || 0;
 
-      const isBold = row.cells.bold === "true";
+      const isBold = (row as any).bold === true || row.cells?.bold === "true";
       const fontSize = parseInt(row.cells.fontSize) || 11;
       const align = (row.cells.align as any) || "left";
       const isLS = (row.cells.size || "").trim().toUpperCase() === "LS";
@@ -2344,28 +2555,28 @@ export async function exportProfessionalWord(
       if (align === "center") wordAlign = AlignmentType.CENTER;
       if (align === "right") wordAlign = AlignmentType.RIGHT;
 
-      const srCell = new TableCell({ children: [new Paragraph({ text: row.cells.sr || String(index + 1) })] });
+      const srCell = new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.sr || String(index + 1), bold: isBold })] })] });
       const particularsCell = new TableCell({
         children: [
           new Paragraph({
-            children: richTextToDocxRuns(row.cells.particulars || "", fontSize * 2),
+            children: richTextToDocxRuns(row.cells.particulars || "", fontSize * 2, isBold),
             alignment: wordAlign
           })
         ]
       });
-      const amountCell = new TableCell({ children: [new Paragraph({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", alignment: AlignmentType.CENTER })] });
+      const amountCell = new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] });
 
       const middleCells = isLS
         ? [
             new TableCell({
               columnSpan: 3,
-              children: [new Paragraph({ children: [new TextRun({ text: "LS" })], alignment: AlignmentType.CENTER })]
+              children: [new Paragraph({ children: [new TextRun({ text: "LS", bold: isBold })], alignment: AlignmentType.CENTER })]
             })
           ]
         : [
-            new TableCell({ children: [new Paragraph({ text: row.cells.size || "" })] }),
-            new TableCell({ children: [new Paragraph({ text: qtyVal > 0 ? pdfNumber(qtyVal) : "—", alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ text: rateVal > 0 ? pdfNumber(rateVal) : "—", alignment: AlignmentType.CENTER })] })
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.size || "", bold: isBold })] })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: qtyVal > 0 ? pdfNumber(qtyVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: rateVal > 0 ? pdfNumber(rateVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] })
           ];
 
       tableRows.push(new TableRow({ children: [srCell, particularsCell, ...middleCells, amountCell] }));

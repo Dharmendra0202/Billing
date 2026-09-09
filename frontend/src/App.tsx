@@ -39,7 +39,10 @@ function sectionToBillTable(section: BillSection, format: BillFormat = "standard
             size:        r.size || "",
             quantity:    String(r.quantity || 0),
             rate:        String(r.rate || 0),
-            amount:      String(r.amount || 0)
+            amount:      String(r.amount || 0),
+            bold:        String(r.bold || false),
+            fontSize:    String(r.fontSize || 11),
+            align:       r.align || "left"
           }
         }));
 
@@ -992,10 +995,10 @@ export function App() {
                       </>
                     ) : (
                       <>
-                        <th style={{ width: 85 }} className="thCenter"><span style={{ fontSize: 11, lineHeight: 1.25, display: "block" }}>Only Labour<br/>Charges</span></th>
-                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 11 }}>Amount</span></th>
-                        <th style={{ width: 105 }} className="thCenter"><span style={{ fontSize: 11, lineHeight: 1.25, display: "block" }}>Materials with<br/>Labour Charges</span></th>
-                        <th style={{ width: 75 }} className="thCenter"><span style={{ fontSize: 11 }}>Amount</span></th>
+                        <th style={{ width: 85 }} className="thCenter"><input className="colHeaderInput" style={{ textAlign: "center", fontSize: 11 }} value={columnLabels.labourCharges ?? "Only Labour Charges"} onChange={e => updateColumnLabel("labourCharges", e.target.value)} title="Click to rename this column" /></th>
+                        <th style={{ width: 75 }} className="thCenter"><input className="colHeaderInput" style={{ textAlign: "center", fontSize: 11 }} value={columnLabels.labourAmount ?? "Amount"} onChange={e => updateColumnLabel("labourAmount", e.target.value)} title="Click to rename this column" /></th>
+                        <th style={{ width: 105 }} className="thCenter"><input className="colHeaderInput" style={{ textAlign: "center", fontSize: 11 }} value={columnLabels.materialCharges ?? "Materials with Labour Charges"} onChange={e => updateColumnLabel("materialCharges", e.target.value)} title="Click to rename this column" /></th>
+                        <th style={{ width: 75 }} className="thCenter"><input className="colHeaderInput" style={{ textAlign: "center", fontSize: 11 }} value={columnLabels.materialAmount ?? "Amount"} onChange={e => updateColumnLabel("materialAmount", e.target.value)} title="Click to rename this column" /></th>
                       </>
                     )}
                     <th style={{ width: 60 }}></th>
