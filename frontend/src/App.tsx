@@ -529,10 +529,10 @@ export function App() {
       if (format === "pdf") {
         // Embed the full editable bill inside the PDF so it can be re-uploaded and edited.
         const embed = encodeBillMarker({ v: 1, header, billDetails, sections, billTitle, columnLabels, billFormat, columnVisibility });
-        await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat }, columnLabels);
+        await exportProfessionalPDF(header, exportTables, detailsWithAdvance, billTitle, { fitToOnePage, embed, format: billFormat, columnVisibility }, columnLabels);
       }
-      else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
-      else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat });
+      else if (format === "excel") await exportProfessionalExcel(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat, columnVisibility });
+      else await exportProfessionalWord(header, exportTables, detailsWithAdvance, billTitle, columnLabels, { format: billFormat, columnVisibility });
     } catch (err) {
       console.error(`${format.toUpperCase()} export failed:`, err);
       alert(`${format.toUpperCase()} export failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1306,7 +1306,7 @@ export function App() {
         <p className="previewLabel">Live Preview</p>
 
         <div className="previewSheet" id="print-area">
-          <BillPreview header={header} sections={sections} billDetails={billDetails} columnLabels={columnLabels} billFormat={billFormat} />
+          <BillPreview header={header} sections={sections} billDetails={billDetails} columnLabels={columnLabels} columnVisibility={columnVisibility} billFormat={billFormat} />
         </div>
 
         <div>

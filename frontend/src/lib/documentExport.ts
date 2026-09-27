@@ -11,7 +11,8 @@ import {
   AlignmentType,
   BorderStyle,
   HeadingLevel,
-  PageBreak
+  PageBreak,
+  TableLayoutType
 } from "docx";
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
@@ -869,12 +870,94 @@ const pdfNumber = (value: number): string => {
   return rounded.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 };
 
+/**
+ * Compute the standard-format column widths (in mm) exactly the way the PDF
+ * does, so that Word and Excel can reuse the SAME proportions. `measure` must
+ * return the rendered width (mm) of a string for a given weight/font-size —
+ * the PDF passes a jsPDF-backed measurer; Word/Excel pass a throwaway jsPDF.
+ *
+ * Returns final widths AFTER hidden columns collapse to 0 (their space is
+ * redistributed to Particulars), matching the PDF's on-page layout.
+ */
+type StdColWidths = { sr: number; particulars: number; size: number; quantity: number; rate: number; amount: number };
+function computeStandardColWidthsMM(
+  measure: (text: string, style: "normal" | "bold", fs: number) => number,
+  tables: BillTable[],
+  columns: ColumnLabels,
+  vis: { size?: boolean; quantity?: boolean; rate?: boolean; amount?: boolean },
+  contentWidth: number
+): StdColWidths {
+  const showSizeCol = vis.size !== false;
+  const showQtyCol = vis.quantity !== false;
+  const showRateCol = vis.rate !== false;
+  const showAmtCol = vis.amount !== false;
+
+  const measureMax = (texts: string[], style: "normal" | "bold", fs: number): number =>
+    texts.reduce((w, t) => Math.max(w, measure(t || "", style, fs)), 0);
+  const allRows = tables.flatMap(t => t.rows);
+  const HEADER_CAP = 34;
+  const headerW = (label: string) => Math.min(measureMax([label], "bold", 11), HEADER_CAP);
+  const dataMax = (texts: string[]) => measureMax(texts, "normal", 11);
+
+  const srData = allRows.map((r, i) => String(r.cells.sr || i + 1));
+  const qtyData = allRows.map(r => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; });
+  const rateData = allRows.map(r => { const v = parseFloat(r.cells.rate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; });
+  const tableSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.amount) || 0), 0));
+  const amtData = [
+    ...allRows.map(r => { const v = parseFloat(r.cells.amount) || 0; return v > 0 ? pdfCurrency(v) : "\u2014"; }),
+    ...tableSubtotals.map(s => pdfCurrency(s))
+  ];
+  const sizeData = tables.flatMap(t => t.rows.map(r => {
+    const s = (r.cells.size || "").trim();
+    if (s.toUpperCase() === "LS") return "";
+    const applyInch = (t.mode ?? "template") !== "manual";
+    return applyInch ? convertAllPointValues(s) : s;
+  }));
+
+  const PAD = 5;
+  let srW = Math.min(Math.max(Math.max(headerW(columns.sr), dataMax(srData)) + PAD, 12), 24);
+  let qtyW = Math.max(Math.max(headerW(columns.quantity), dataMax(qtyData)) + PAD, 16);
+  let rateW = Math.max(Math.max(headerW(columns.rate), dataMax(rateData)) + PAD, 14);
+  let amtW = Math.max(Math.max(headerW(columns.amount), dataMax(amtData)) + PAD, 22);
+  const SIZE_PLUS_PARTICULARS_MIN = 56;
+  const maxNumericTotal = contentWidth - SIZE_PLUS_PARTICULARS_MIN;
+  const numericTotal = srW + qtyW + rateW + amtW;
+  if (numericTotal > maxNumericTotal) {
+    const f = maxNumericTotal / numericTotal;
+    srW *= f; qtyW *= f; rateW *= f; amtW *= f;
+  }
+  const remaining = contentWidth - (srW + qtyW + rateW + amtW);
+  const PARTICULARS_MIN = 38;
+  const sizePreferred = Math.max(headerW(columns.size), dataMax(sizeData)) + PAD;
+  let sizeW = Math.min(sizePreferred, remaining - PARTICULARS_MIN);
+  sizeW = Math.max(sizeW, 18);
+  sizeW = Math.min(sizeW, Math.max(remaining - 12, 18));
+  let particularsW = Math.max(remaining - sizeW, 12);
+  if (!showSizeCol) { particularsW += sizeW; sizeW = 0; }
+  if (!showQtyCol) { particularsW += qtyW; qtyW = 0; }
+  if (!showRateCol) { particularsW += rateW; rateW = 0; }
+  if (!showAmtCol) { particularsW += amtW; amtW = 0; }
+
+  return { sr: srW, particulars: particularsW, size: sizeW, quantity: qtyW, rate: rateW, amount: amtW };
+}
+
+/** A throwaway jsPDF measurer for Word/Excel, matching the PDF's text metrics. */
+function makeTimesMeasurer(): (text: string, style: "normal" | "bold", fs: number) => number {
+  const mdoc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  registerRupeeFont(mdoc);
+  return (text: string, style: "normal" | "bold", fs: number) => {
+    mdoc.setFont("times", style);
+    mdoc.setFontSize(fs);
+    return mdoc.getTextWidth(text || "");
+  };
+}
+
 export async function exportProfessionalPDF(
   header: HeaderTemplate,
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
-  options?: { fitToOnePage?: boolean; embed?: string; format?: "standard" | "labourMaterial" | "custom" },
+  options?: { fitToOnePage?: boolean; embed?: string; format?: "standard" | "labourMaterial" | "custom"; columnVisibility?: { size?: boolean; quantity?: boolean; rate?: boolean; amount?: boolean } },
   columns: ColumnLabels = defaultColumnLabels
 ): Promise<void> {
   // Explicit A4 portrait (210 x 297 mm) so the page size never depends on defaults.
@@ -887,6 +970,13 @@ export async function exportProfessionalPDF(
   // Calculate grand total across all tables
   const isLabourFormat = options?.format === "labourMaterial";
   const isCustomFormat = options?.format === "custom";
+
+  // Standard-format column visibility (Sr + Particulars always shown).
+  const cv = options?.columnVisibility ?? {};
+  const showSizeCol = cv.size !== false;
+  const showQtyCol = cv.quantity !== false;
+  const showRateCol = cv.rate !== false;
+  const showAmtCol = cv.amount !== false;
 
   const findCustomAmountCol = (cols: BillColumn[]) => {
     const byIdOrLabel = cols.find(c => c.id === "amount" || c.label.toLowerCase().includes("amount"));
@@ -989,22 +1079,10 @@ export async function exportProfessionalPDF(
     doc.setFont("times", "normal");
     doc.text("To,", margin, yPos);
     yPos += 3.8;
-    // Client name — render with inline bold segments
-    const clientSegments = parseRichText(billDetails.clientName || "________________");
-    const clientPlain = getPlainText(billDetails.clientName || "________________");
-    drawRichLine(doc, clientPlain, clientSegments, clientPlain, margin, yPos, 11, "left");
-    yPos += 3.8;
+    // Client name — robust rich-text rendering (honours inline bold).
+    yPos = drawRichHtml(doc, billDetails.clientName || "________________", margin, yPos, pageWidth - 2 * margin - 40, 3.8, 11, "left");
     if (billDetails.showClientAddress !== false) {
-      const addrParts = (billDetails.clientAddress || "________________").split(/<br\s*\/?>/gi);
-      for (const part of addrParts) {
-        const addrPlain = getPlainText(part);
-        const addrSegments = parseRichText(part);
-        const addressLines = doc.splitTextToSize(addrPlain, pageWidth - 2 * margin - 40);
-        addressLines.forEach((line: string, idx: number) => {
-          drawRichLine(doc, line, addrSegments, addrPlain, margin, yPos + idx * 3.8, 11, "left");
-        });
-        yPos += addressLines.length * 3.8;
-      }
+      yPos = drawRichHtml(doc, billDetails.clientAddress || "________________", margin, yPos, pageWidth - 2 * margin - 40, 3.8, 11, "left");
     } else {
       yPos += 3.8;
     }
@@ -1014,10 +1092,10 @@ export async function exportProfessionalPDF(
   // Subject - Centered (only when a subject is provided)
   if (billDetails.subject && billDetails.subject.trim()) {
     doc.setFontSize(11);
-    const subPlain = getPlainText(billDetails.subject);
-    const subSegments = parseRichText(billDetails.subject);
-    drawRichLine(doc, `Sub: ${subPlain}`, [{ text: "Sub: ", bold: false }, ...subSegments], `Sub: ${subPlain}`, pageWidth / 2, yPos, 11, "center");
-    yPos += 12;
+    // Draw "Sub: " label + the (possibly bold) subject text, centered.
+    const subjectHtml = `Sub: ${billDetails.subject}`;
+    yPos = drawRichHtml(doc, subjectHtml, pageWidth / 2, yPos, pageWidth - 40, 4, 11, "center");
+    yPos += 8;
   }
 
   // ── Dynamic column widths (shared by every section table) ─────────────────
@@ -1026,58 +1104,18 @@ export async function exportProfessionalPDF(
   // longest entry; Particulars takes whatever width remains. Size + Particulars
   // also wrap to multiple lines as a final safety net so text is never cut.
   const contentWidth = pageWidth - 2 * margin;
-  const measureMax = (texts: string[], style: "normal" | "bold", fs: number): number => {
+  // Shared width computation (also used by Word & Excel so all three match).
+  // For custom/labour we don't collapse the standard columns, so pass all-visible.
+  const stdVis = (!isCustomFormat && !isLabourFormat)
+    ? { size: showSizeCol, quantity: showQtyCol, rate: showRateCol, amount: showAmtCol }
+    : { size: true, quantity: true, rate: true, amount: true };
+  const measurePdf = (text: string, style: "normal" | "bold", fs: number) => {
     doc.setFont("times", style);
     doc.setFontSize(fs);
-    return texts.reduce((w, t) => Math.max(w, doc.getTextWidth(t || "")), 0);
+    return doc.getTextWidth(text || "");
   };
-  const allRowsForWidth = tables.flatMap(t => t.rows);
-  // A long custom header (e.g. "Materials with labour Charges") should WRAP inside
-  // its column rather than stretch the column, so cap its width contribution.
-  const HEADER_CAP = 34;
-  const headerW = (label: string) => Math.min(measureMax([label], "bold", 11), HEADER_CAP);
-  const dataMax = (texts: string[]) => measureMax(texts, "normal", 11);
-
-  const srData = allRowsForWidth.map((r, i) => String(r.cells.sr || i + 1));
-  const qtyData = allRowsForWidth.map(r => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; });
-  const rateData = allRowsForWidth.map(r => { const v = parseFloat(r.cells.rate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; });
-  // Include each table's subtotal (with the ₹ symbol) so the Amount column is
-  // wide enough for the in-table Total row.
-  const tableSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.amount) || 0), 0));
-  const amtData = [
-    ...allRowsForWidth.map(r => { const v = parseFloat(r.cells.amount) || 0; return v > 0 ? pdfCurrency(v) : "\u2014"; }),
-    ...tableSubtotals.map(s => pdfCurrency(s))
-  ];
-  const sizeData = tables.flatMap(t => t.rows.map(r => {
-    const s = (r.cells.size || "").trim();
-    if (s.toUpperCase() === "LS") return "";
-    const applyInch = (t.mode ?? "template") !== "manual";
-    return applyInch ? convertAllPointValues(s) : s;
-  }));
-  const PAD = 5;
-  let srW = Math.min(Math.max(Math.max(headerW(columns.sr), dataMax(srData)) + PAD, 12), 24);
-  let qtyW = Math.max(Math.max(headerW(columns.quantity), dataMax(qtyData)) + PAD, 16);
-  let rateW = Math.max(Math.max(headerW(columns.rate), dataMax(rateData)) + PAD, 14);
-  let amtW = Math.max(Math.max(headerW(columns.amount), dataMax(amtData)) + PAD, 22);
-  // Guarantee Size + Particulars always keep a usable share of the width. If the
-  // numeric columns would be too greedy (very large numbers), scale them down —
-  // their cells wrap, so the values still show in full over multiple lines.
-  const SIZE_PLUS_PARTICULARS_MIN = 56;
-  const maxNumericTotal = contentWidth - SIZE_PLUS_PARTICULARS_MIN;
-  const numericTotal = srW + qtyW + rateW + amtW;
-  if (numericTotal > maxNumericTotal) {
-    const f = maxNumericTotal / numericTotal;
-    srW *= f; qtyW *= f; rateW *= f; amtW *= f;
-  }
-  const remainingForSizeAndParticulars = contentWidth - (srW + qtyW + rateW + amtW);
-  const PARTICULARS_MIN = 38;
-  const sizePreferred = Math.max(headerW(columns.size), dataMax(sizeData)) + PAD;
-  // Give Size what it needs, but never so much that Particulars drops below its
-  // minimum; clamp within the space that's actually available.
-  let sizeW = Math.min(sizePreferred, remainingForSizeAndParticulars - PARTICULARS_MIN);
-  sizeW = Math.max(sizeW, 18);
-  sizeW = Math.min(sizeW, Math.max(remainingForSizeAndParticulars - 12, 18));
-  const particularsW = Math.max(remainingForSizeAndParticulars - sizeW, 12);
+  const cw = computeStandardColWidthsMM(measurePdf, tables, columns, stdVis, contentWidth);
+  const srW = cw.sr, particularsW = cw.particulars, sizeW = cw.size, qtyW = cw.quantity, rateW = cw.rate, amtW = cw.amount;
   const colWidths = [srW, particularsW, sizeW, qtyW, rateW, amtW];
   const colX = [
     margin + 2, // Sr. No
@@ -1305,8 +1343,13 @@ export async function exportProfessionalPDF(
       ? [columns.sr, columns.particulars, columns.size, columns.quantity, columns.labourCharges ?? "Only Labour Charges", columns.labourAmount ?? "Amount", columns.materialCharges ?? "Materials with Labour Charges", columns.materialAmount ?? "Amount"]
       : [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
 
+    // Blank out hidden standard columns so their header label isn't drawn.
+    const visLabels = (!isCustomFormat && !isLabourFormat)
+      ? [labels[0], labels[1], showSizeCol ? labels[2] : "", showQtyCol ? labels[3] : "", showRateCol ? labels[4] : "", showAmtCol ? labels[5] : ""]
+      : labels;
     const labelLines = colWidths.map((w, i) => {
-      const text = labels[i] || "";
+      const text = visLabels[i] || "";
+      if (!text) return [""];
       if (text.includes("\n")) return text.split("\n");
       return doc.splitTextToSize(text, Math.max(w - 2, 6));
     });
@@ -1610,16 +1653,22 @@ export async function exportProfessionalPDF(
         const amtCol = findCustomAmountCol(table.columns);
         subtotal += amtCol ? (parseFloat(m.row.cells[amtCol.id]) || 0) : 0;
       } else {
-        // Sr. No (centred across the full group height, like Qty/Rate/Amt)
+        // Sr No + Particulars span the whole group (main + sub-rows) as one merged
+        // cell, so centre them on the full group height when sub-rows exist;
+        // otherwise centre on the single row.
+        const srBaseline = hasSubRows ? baselineForGroup : baselineFor;
         doc.setFont("times", "normal");
         doc.setFontSize(nfs);
-        doc.text(m.srLines, srCenterX, baselineForGroup(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
+        doc.text(m.srLines, srCenterX, srBaseline(m.srLines.length, nLineSpacing, nCapHeight), { align: "center" });
 
-        // Particulars — render with inline bold segments directly from wrappedVisualRows
+        // Particulars — render with inline bold segments, centred on the group
+        // when sub-rows exist (matching the merged Sr No cell), else on the row.
         doc.setFontSize(m.fontSize);
         const alignOpt = align === "left" ? "left" : align === "right" ? "right" : "center";
         const drawX = colX[1] + (align === "right" ? colWidths[1] - 4 : align === "center" ? (colWidths[1] - 4) / 2 : 0);
-        const baseY = baselineFor(m.wrappedVisualRows.length, m.lineSpacing, m.capHeight);
+        const baseY = hasSubRows
+          ? baselineForGroup(m.wrappedVisualRows.length, m.lineSpacing, m.capHeight)
+          : baselineFor(m.wrappedVisualRows.length, m.lineSpacing, m.capHeight);
 
         m.wrappedVisualRows.forEach((vRow: RichSegment[], lineIdx: number) => {
           const lineY = baseY + lineIdx * m.lineSpacing;
@@ -1632,12 +1681,16 @@ export async function exportProfessionalPDF(
         if (isLS) {
           // Merge from Size through to the column before the last Amount.
           const mergeStart = verticalX[2];
-          const mergeEnd = isLabourFormat ? verticalX[verticalX.length - 2] : verticalX[5];
+          const mergeEnd = isLabourFormat ? verticalX[verticalX.length - 2] : (showAmtCol ? verticalX[5] : verticalX[6]);
           doc.text("LS", (mergeStart + mergeEnd) / 2, baselineFor(1, nLineSpacing, nCapHeight), { align: "center" });
         } else {
-          const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
-          doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
-          doc.text(m.qtyLines, qtyCenterX, baselineForGroup(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          if (isLabourFormat || showSizeCol) {
+            const sizeLines = m.sizeLines.length > 0 ? m.sizeLines : ["\u2014"];
+            doc.text(sizeLines, sizeCenterX, baselineFor(sizeLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          }
+          if (isLabourFormat || showQtyCol) {
+            doc.text(m.qtyLines, qtyCenterX, baselineForGroup(m.qtyLines.length, nLineSpacing, nCapHeight), { align: "center" });
+          }
           if (isLabourFormat) {
             // Labour rate + amount, Material rate + amount
             const labourRate = parseFloat(m.row.cells.labourRate) || 0;
@@ -1648,12 +1701,12 @@ export async function exportProfessionalPDF(
             doc.text(labourAmt > 0 ? pdfNumber(labourAmt) : "\u2014", labourAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
             doc.text(materialRate > 0 ? pdfNumber(materialRate) : "\u2014", materialCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
             doc.text(materialAmt > 0 ? pdfNumber(materialAmt) : "\u2014", materialAmtCenterX, baselineForGroup(1, nLineSpacing, nCapHeight), { align: "center" });
-          } else {
+          } else if (showRateCol) {
             doc.text(m.rateLines, rateCenterX, baselineForGroup(m.rateLines.length, nLineSpacing, nCapHeight), { align: "center" });
           }
         }
         // Amount column (standard format only — labour format draws both amounts above).
-        if (!isLabourFormat) {
+        if (!isLabourFormat && showAmtCol) {
           doc.text(m.amtLines, amtCenterX, baselineForGroup(m.amtLines.length, nLineSpacing, nCapHeight), { align: "center" });
         }
 
@@ -1663,9 +1716,11 @@ export async function exportProfessionalPDF(
       // Draw the main row's height, then sub-rows below it.
 
       if (hasSubRows) {
-        // Main row line: only across Sr + Particulars + Size (not Qty/Rate/Amt which are merged)
+        // Divider between the main row and the first sub-row: draw ONLY across the
+        // Size column (verticalX[2] → verticalX[3]). This keeps Sr No + Particulars
+        // as one clean merged cell so their (group-centred) text is never cut.
         yPos += mainH;
-        doc.line(margin, yPos, verticalX[3], yPos);
+        doc.line(verticalX[2], yPos, verticalX[3], yPos);
 
         // Draw each sub-row (particulars + size only)
         doc.setFont("times", "normal");
@@ -1673,7 +1728,7 @@ export async function exportProfessionalPDF(
         m.subRowsData.forEach((sub, si) => {
           const subTop = yPos;
           const subBaseY = subTop + sub.height / 2 + nCapHeight / 2;
-          // Sub-row particulars
+          // Sub-row particulars (rare — usually only Size is used in sub-rows)
           if (sub.particulars.length > 0 && sub.particulars[0]) {
             doc.text(sub.particulars, colX[1], subBaseY, { align: "left" });
           }
@@ -1682,11 +1737,12 @@ export async function exportProfessionalPDF(
             doc.text(sub.size, sizeCenterX, subBaseY, { align: "center" });
           }
           yPos += sub.height;
-          // Line after sub-row: full width for the last sub-row, partial for others
+          // Line after sub-row: full width for the last sub-row (closes the group),
+          // Size-only for intermediate sub-rows.
           if (si === m.subRowsData.length - 1) {
             doc.line(margin, yPos, pageWidth - margin, yPos);
           } else {
-            doc.line(margin, yPos, verticalX[3], yPos);
+            doc.line(verticalX[2], yPos, verticalX[3], yPos);
           }
         });
       } else {
@@ -1700,6 +1756,10 @@ export async function exportProfessionalPDF(
 
     // In-table Total row(s). For the custom format this can be turned off per table.
     if (isCustomFormat && table.showTableTotal === false) {
+      return subtotal;
+    }
+    // Standard format with the Amount column hidden: no total row to draw.
+    if (!isCustomFormat && !isLabourFormat && !showAmtCol) {
       return subtotal;
     }
     const totalRowH = minRowHeight * scale;
@@ -1744,16 +1804,21 @@ export async function exportProfessionalPDF(
       doc.line(verticalX[8], totalTop, verticalX[8], totalBot);
       doc.text("Total", (verticalX[6] + verticalX[7]) / 2, yBaseTotal, { align: "center" });
       doc.text(pdfCurrency(subtotal), (verticalX[7] + verticalX[8]) / 2, yBaseTotal, { align: "center" });
-    } else {
-      // Standard: "Total" under Rate, summed amount under Amount.
-      doc.line(verticalX[4], totalTop, verticalX[6], totalTop);
-      doc.line(verticalX[4], totalBot, verticalX[6], totalBot);
-      doc.line(verticalX[4], totalTop, verticalX[4], totalBot);
-      doc.line(verticalX[5], totalTop, verticalX[5], totalBot);
-      doc.line(verticalX[6], totalTop, verticalX[6], totalBot);
-      doc.text("Total", (verticalX[4] + verticalX[5]) / 2, yBaseTotal, { align: "center" });
-      doc.text(pdfCurrency(subtotal), (verticalX[5] + verticalX[6]) / 2, yBaseTotal, { align: "center" });
+    } else if (showAmtCol) {
+      // Standard: total value under the Amount column; "Total" label in the last
+      // VISIBLE column immediately to its left (rate → qty → size → particulars).
+      const valLeftX = verticalX[5];               // Amount column's left edge
+      const valRightX = verticalX[6];              // Amount column's right edge
+      const labelLeftX = showRateCol ? verticalX[4] : showQtyCol ? verticalX[3] : showSizeCol ? verticalX[2] : verticalX[1];
+      doc.line(labelLeftX, totalTop, valRightX, totalTop);
+      doc.line(labelLeftX, totalBot, valRightX, totalBot);
+      doc.line(labelLeftX, totalTop, labelLeftX, totalBot);
+      doc.line(valLeftX, totalTop, valLeftX, totalBot);
+      doc.line(valRightX, totalTop, valRightX, totalBot);
+      doc.text("Total", (labelLeftX + valLeftX) / 2, yBaseTotal, { align: "center" });
+      doc.text(pdfCurrency(subtotal), (valLeftX + valRightX) / 2, yBaseTotal, { align: "center" });
     }
+    // If the Amount column is hidden, no in-table total row is drawn.
     yPos = totalBot;
 
     return subtotal;
@@ -1835,30 +1900,54 @@ export async function exportProfessionalPDF(
     else groups[groups.length - 1].push(t);
   });
 
-  // When enabled, each page group is shrunk (row heights + fonts) just enough to
-  // fit on its own single page. Groups always begin on a fresh page.
+  // When enabled, tables are shrunk (row heights + fonts) to fit their page.
+  // To keep table sizes CONSISTENT across all pages, we compute the scale each
+  // page needs and then apply the SMALLEST (most-shrunk) scale to every page.
+  // This means the busiest page (usually page 1, which also carries the header)
+  // sets the size, and every other page matches it — no page can overflow since
+  // a less-crowded page always fits at a smaller scale.
   const shrinkToFit = options?.fitToOnePage === true;
 
+  // ── Pass 1: determine the single uniform scale ─────────────────────────────
+  // For each page-group, compute how much it could scale to EXACTLY fill its
+  // available page height (availableForGroup / naturalGroupHeight). Taking the
+  // MINIMUM ratio across all groups gives one scale that:
+  //   • never overflows any page (the tightest page limits the scale), and
+  //   • grows short content UP to fill the page when there's spare room.
+  // A cap keeps sparse tables from stretching into absurdly tall rows.
+  const MAX_GROW = 1.6;  // never enlarge beyond 1.6× (keeps rows readable)
+  const MIN_SHRINK = 0.4; // never shrink below 40%
+  let uniformScale = 1;
+  if (shrinkToFit) {
+    const firstGroupStartY = yPos; // page 1 begins below the letterhead/subject
+    let bestScale = MAX_GROW; // start high; each group pulls it down to what fits
+    groups.forEach((group, gi) => {
+      const isLastGroup = gi === groups.length - 1;
+      const startY = gi === 0 ? firstGroupStartY : 20; // later groups start fresh
+      const naturalGroupHeight =
+        group.reduce((s, t) => s + measureTableNatural(t), 0) + 15 * Math.max(0, group.length - 1);
+      const endLimit = isLastGroup
+        ? (billDetails.showSignature ? 236 : pageBottom - 6) - GRAND_SUMMARY_RESERVE - noteReserve
+        : pageBottom - 6;
+      const availableForGroup = endLimit - startY;
+      if (availableForGroup > 0 && naturalGroupHeight > 0) {
+        const ratio = availableForGroup / naturalGroupHeight;
+        bestScale = Math.min(bestScale, ratio);
+      }
+    });
+    uniformScale = Math.max(MIN_SHRINK, Math.min(MAX_GROW, bestScale));
+  }
+
+  // ── Pass 2: draw every group at the uniform scale ──────────────────────────
   groups.forEach((group, gi) => {
     const isLastGroup = gi === groups.length - 1;
     if (gi > 0) { doc.addPage(); yPos = 20; }
 
-    let groupScale = 1;
-    if (shrinkToFit) {
-      const naturalGroupHeight =
-        group.reduce((s, t) => s + measureTableNatural(t), 0) + 15 * Math.max(0, group.length - 1);
-      // The last group leaves room for the grand-total summary (+ note/signature).
-      const endLimit = isLastGroup
-        ? (billDetails.showSignature ? 236 : pageBottom - 6) - GRAND_SUMMARY_RESERVE - noteReserve
-        : pageBottom - 6;
-      const availableForGroup = endLimit - yPos;
-      if (availableForGroup > 0 && naturalGroupHeight > availableForGroup) {
-        // Never shrink below 40% (stays readable); if it still won't fit, the
-        // group simply flows to another page as usual.
-        groupScale = Math.max(0.4, availableForGroup / naturalGroupHeight);
-      }
-    }
-    const groupFitActive = groupScale < 1;
+    const groupScale = uniformScale;
+    // When shrink-to-fit is on, Pass 1 already sized the group to fit its page
+    // (including reserving summary/note space), so draw straight through without
+    // per-table reserve/compression. Only reserve at natural size (no fit).
+    const groupFitActive = shrinkToFit && groupScale !== 1;
 
     group.forEach((table, ti) => {
       const isLastTable = ti === group.length - 1;
@@ -1945,10 +2034,15 @@ export async function exportProfessionalExcel(
   billDetails: BillDetails,
   filename: string = "bill",
   columns: ColumnLabels = defaultColumnLabels,
-  options?: { format?: "standard" | "labourMaterial" | "custom" }
+  options?: { format?: "standard" | "labourMaterial" | "custom"; columnVisibility?: { size?: boolean; quantity?: boolean; rate?: boolean; amount?: boolean } }
 ): Promise<void> {
   const isLabourFormat = options?.format === "labourMaterial";
   const isCustomFormat = options?.format === "custom";
+  const xcv = options?.columnVisibility ?? {};
+  const xShowSize = xcv.size !== false;
+  const xShowQty = xcv.quantity !== false;
+  const xShowRate = xcv.rate !== false;
+  const xShowAmt = xcv.amount !== false;
 
   const tableTotal = (t: BillTable) => {
     if (isCustomFormat) {
@@ -1989,9 +2083,23 @@ export async function exportProfessionalExcel(
     LAST_COL = String.fromCharCode(64 + Math.min(colCount, 26));
     ws.columns = tables[0].columns.map(c => ({ width: c.kind === "number" ? 14 : 30 }));
   } else {
-    ws.columns = [
-      { width: 8 }, { width: 45 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 16 }
-    ];
+    // Standard format: derive column widths from the SAME mm computation the PDF
+    // uses, so Excel proportions match the PDF. mm → Excel char-width units.
+    const xStdCW = computeStandardColWidthsMM(
+      makeTimesMeasurer(),
+      tables,
+      columns,
+      { size: xShowSize, quantity: xShowQty, rate: xShowRate, amount: xShowAmt },
+      170
+    );
+    const mmToExcel = (mm: number) => Math.max(4, mm * 0.62);
+    const stdWidths: { width: number }[] = [{ width: mmToExcel(xStdCW.sr) }, { width: mmToExcel(xStdCW.particulars) }];
+    if (xShowSize) stdWidths.push({ width: mmToExcel(xStdCW.size) });
+    if (xShowQty) stdWidths.push({ width: mmToExcel(xStdCW.quantity) });
+    if (xShowRate) stdWidths.push({ width: mmToExcel(xStdCW.rate) });
+    if (xShowAmt) stdWidths.push({ width: mmToExcel(xStdCW.amount) });
+    ws.columns = stdWidths;
+    LAST_COL = String.fromCharCode(64 + stdWidths.length);
   }
 
   type BannerOpts = { align?: "left" | "center" | "right"; bold?: boolean; size?: number };
@@ -2172,7 +2280,15 @@ export async function exportProfessionalExcel(
     }
 
     // Standard format
-    const hr = ws.addRow([columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount]);
+    // Build the visible standard column list (Sr + Particulars always shown).
+    const stdHeader = [columns.sr, columns.particulars];
+    if (xShowSize) stdHeader.push(columns.size);
+    if (xShowQty) stdHeader.push(columns.quantity);
+    if (xShowRate) stdHeader.push(columns.rate);
+    if (xShowAmt) stdHeader.push(columns.amount);
+    const partCellIdx = 2; // Particulars is always the 2nd cell (1-based → cell 2)
+
+    const hr = ws.addRow(stdHeader);
     hr.eachCell(c => {
       c.font = { bold: true };
       c.fill = headerFill;
@@ -2188,40 +2304,41 @@ export async function exportProfessionalExcel(
       const isLS = (row.cells.size || "").trim().toUpperCase() === "LS";
       const qtyRounded = Math.round(qty * 100) / 100;
       const rateRounded = Math.round(rate * 100) / 100;
-      const dr = ws.addRow([
-        row.cells.sr || String(index + 1),
-        "",
-        isLS ? "LS" : (row.cells.size || ""),
-        isLS ? "" : (qty > 0 ? qtyRounded : ""),
-        isLS ? "" : (rate > 0 ? rateRounded : ""),
-        amtVal > 0 ? `${formatIndianNumber(amtVal)}/-` : ""
-      ]);
+      const rowArr: any[] = [row.cells.sr || String(index + 1), ""];
+      if (xShowSize) rowArr.push(isLS ? "LS" : (row.cells.size || ""));
+      if (xShowQty) rowArr.push(isLS ? "" : (qty > 0 ? qtyRounded : ""));
+      if (xShowRate) rowArr.push(isLS ? "" : (rate > 0 ? rateRounded : ""));
+      if (xShowAmt) rowArr.push(amtVal > 0 ? `${formatIndianNumber(amtVal)}/-` : "");
+      const dr = ws.addRow(rowArr);
       const richVal = parseRichTextForExcel(row.cells.particulars || "", isRowBold);
-      if (typeof richVal === "object") {
-        dr.getCell(2).value = richVal;
-      } else {
-        dr.getCell(2).value = richVal;
-        if (isRowBold) dr.getCell(2).font = { bold: true };
-      }
-      dr.getCell(2).alignment = { wrapText: true };
+      dr.getCell(partCellIdx).value = richVal as any;
+      if (typeof richVal !== "object" && isRowBold) dr.getCell(partCellIdx).font = { bold: true };
+      dr.getCell(partCellIdx).alignment = { wrapText: true };
       dr.eachCell({ includeEmpty: true }, c => { c.border = cellBorder; });
-      [1, 3, 4, 5, 6].forEach(i => {
+      for (let i = 1; i <= rowArr.length; i++) {
+        if (i === partCellIdx) continue;
         dr.getCell(i).alignment = { horizontal: "center" };
         if (isRowBold) dr.getCell(i).font = { bold: true };
-      });
-      if (isLS) {
-        ws.mergeCells(`C${dr.number}:E${dr.number}`);
-        dr.getCell(3).alignment = { horizontal: "center" };
       }
     });
 
-    const sub = tableTotal(table);
-    const tr = ws.addRow(["", "", "", "", "Total", `${formatIndianNumber(sub)}/-`]);
-    [5, 6].forEach(i => {
-      tr.getCell(i).font = { bold: true };
-      tr.getCell(i).border = cellBorder;
-      tr.getCell(i).alignment = { horizontal: "center" };
-    });
+    // Total row: only when the Amount column is visible.
+    if (xShowAmt) {
+      const sub = tableTotal(table);
+      const totArr: any[] = ["", ""];
+      if (xShowSize) totArr.push("");
+      if (xShowQty) totArr.push("");
+      if (xShowRate) totArr.push("Total");
+      else totArr[totArr.length - 1] = "Total"; // put label in last col before amount
+      totArr.push(`${formatIndianNumber(sub)}/-`);
+      const tr = ws.addRow(totArr);
+      const lastIdx = totArr.length;
+      [lastIdx - 1, lastIdx].forEach(i => {
+        tr.getCell(i).font = { bold: true };
+        tr.getCell(i).border = cellBorder;
+        tr.getCell(i).alignment = { horizontal: "center" };
+      });
+    }
     addSpacer();
   });
 
@@ -2231,7 +2348,8 @@ export async function exportProfessionalExcel(
   if (billDetails.showAdvance !== false) summaryLines.push(["Advance:", `${formatIndianNumber(billDetails.advance)}/-`]);
   if (billDetails.showBalance !== false) summaryLines.push(["Balance:", `${formatIndianNumber(balance)}/-`]);
   summaryLines.forEach(([label, value]) => {
-    const lastColIdx = isLabourFormat ? 8 : (isCustomFormat && tables[0]?.columns?.length ? tables[0].columns.length : 6);
+    const stdColCount = 2 + (xShowSize ? 1 : 0) + (xShowQty ? 1 : 0) + (xShowRate ? 1 : 0) + (xShowAmt ? 1 : 0);
+    const lastColIdx = isLabourFormat ? 8 : (isCustomFormat && tables[0]?.columns?.length ? tables[0].columns.length : stdColCount);
     const labelColIdx = Math.max(1, lastColIdx - 1);
     const rowArray = Array(lastColIdx).fill("");
     rowArray[labelColIdx - 1] = label;
@@ -2268,16 +2386,40 @@ export async function exportProfessionalExcel(
   );
 }
 
+// Full single-line grid, matching the PDF table look.
+const WORD_TABLE_BORDERS = {
+  top: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+  bottom: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+  left: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+  right: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+  insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+  insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "000000" },
+};
+// No visible grid — used for the right-aligned totals summary (matches PDF).
+const WORD_NO_BORDERS = {
+  top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+  bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+  left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+  right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+  insideHorizontal: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+  insideVertical: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+};
+
 export async function exportProfessionalWord(
   header: HeaderTemplate,
   tables: BillTable[],
   billDetails: BillDetails,
   filename: string = "bill",
   columns: ColumnLabels = defaultColumnLabels,
-  options?: { format?: "standard" | "labourMaterial" | "custom" }
+  options?: { format?: "standard" | "labourMaterial" | "custom"; columnVisibility?: { size?: boolean; quantity?: boolean; rate?: boolean; amount?: boolean } }
 ): Promise<void> {
   const isLabourFormat = options?.format === "labourMaterial";
   const isCustomFormat = options?.format === "custom";
+  const wcv = options?.columnVisibility ?? {};
+  const wShowSize = wcv.size !== false;
+  const wShowQty = wcv.quantity !== false;
+  const wShowRate = wcv.rate !== false;
+  const wShowAmt = wcv.amount !== false;
 
   const tableTotalW = (t: BillTable) => {
     if (isCustomFormat) {
@@ -2291,6 +2433,18 @@ export async function exportProfessionalWord(
   const total = tables.reduce((sum, t) => sum + tableTotalW(t), 0);
   const balance = total - billDetails.advance;
   const multipleTables = tables.length > 1;
+
+  // Column widths that MATCH the PDF: measure content the same way, in mm, then
+  // convert to DXA (twips). 1mm = 56.6929 DXA. PDF content width = 210 - 2*20.
+  const WORD_CONTENT_MM = 170;
+  const mmToDxa = (mm: number) => Math.max(1, Math.round(mm * 56.6929));
+  const stdCW = computeStandardColWidthsMM(
+    makeTimesMeasurer(),
+    tables,
+    columns,
+    { size: wShowSize, quantity: wShowQty, rate: wShowRate, amount: wShowAmt },
+    WORD_CONTENT_MM
+  );
 
   const children: (Paragraph | Table)[] = [];
 
@@ -2467,7 +2621,7 @@ export async function exportProfessionalWord(
         tableRows.push(new TableRow({ children: totalCells }));
       }
 
-      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: WORD_TABLE_BORDERS }));
       return;
     }
 
@@ -2522,22 +2676,38 @@ export async function exportProfessionalWord(
         ]
       }));
 
-      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: WORD_TABLE_BORDERS }));
       return;
     }
 
-    // Standard format
-    const buildHeaderRow = () =>
-      new TableRow({
-        children: [
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 42, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.rate, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.amount, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 15, type: WidthType.PERCENTAGE } })
-        ]
-      });
+    // Standard format — column widths MATCH the PDF (converted mm → DXA).
+    // Hidden columns already collapsed to 0 (their width folded into Particulars).
+    const midVisibleCount = (wShowSize ? 1 : 0) + (wShowQty ? 1 : 0) + (wShowRate ? 1 : 0);
+    const srDxa = mmToDxa(stdCW.sr);
+    const partDxa = mmToDxa(stdCW.particulars);
+    const sizeDxa = mmToDxa(stdCW.size);
+    const qtyDxa = mmToDxa(stdCW.quantity);
+    const rateDxa = mmToDxa(stdCW.rate);
+    const amtDxa = mmToDxa(stdCW.amount);
+    // Column-width array for the table (only visible columns, in order).
+    const stdColWidthsDxa: number[] = [srDxa, partDxa];
+    if (wShowSize) stdColWidthsDxa.push(sizeDxa);
+    if (wShowQty) stdColWidthsDxa.push(qtyDxa);
+    if (wShowRate) stdColWidthsDxa.push(rateDxa);
+    if (wShowAmt) stdColWidthsDxa.push(amtDxa);
+    const tableTotalDxa = stdColWidthsDxa.reduce((s, w) => s + w, 0);
+
+    const buildHeaderRow = () => {
+      const cells = [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: srDxa, type: WidthType.DXA } }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: partDxa, type: WidthType.DXA } })
+      ];
+      if (wShowSize) cells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: sizeDxa, type: WidthType.DXA } }));
+      if (wShowQty) cells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: qtyDxa, type: WidthType.DXA } }));
+      if (wShowRate) cells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.rate, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: rateDxa, type: WidthType.DXA } }));
+      if (wShowAmt) cells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.amount, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: amtDxa, type: WidthType.DXA } }));
+      return new TableRow({ children: cells });
+    };
 
     const tableRows: TableRow[] = [buildHeaderRow()];
 
@@ -2555,48 +2725,54 @@ export async function exportProfessionalWord(
       if (align === "center") wordAlign = AlignmentType.CENTER;
       if (align === "right") wordAlign = AlignmentType.RIGHT;
 
-      const srCell = new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.sr || String(index + 1), bold: isBold })] })] });
-      const particularsCell = new TableCell({
-        children: [
-          new Paragraph({
-            children: richTextToDocxRuns(row.cells.particulars || "", fontSize * 2, isBold),
-            alignment: wordAlign
-          })
-        ]
-      });
-      const amountCell = new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] });
+      const rowCells: TableCell[] = [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.sr || String(index + 1), bold: isBold })] })] }),
+        new TableCell({
+          children: [new Paragraph({ children: richTextToDocxRuns(row.cells.particulars || "", fontSize * 2, isBold), alignment: wordAlign })]
+        })
+      ];
 
-      const middleCells = isLS
-        ? [
-            new TableCell({
-              columnSpan: 3,
-              children: [new Paragraph({ children: [new TextRun({ text: "LS", bold: isBold })], alignment: AlignmentType.CENTER })]
-            })
-          ]
-        : [
-            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.size || "", bold: isBold })] })] }),
-            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: qtyVal > 0 ? pdfNumber(qtyVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }),
-            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: rateVal > 0 ? pdfNumber(rateVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] })
-          ];
+      if (isLS && midVisibleCount > 0) {
+        rowCells.push(new TableCell({ columnSpan: midVisibleCount, children: [new Paragraph({ children: [new TextRun({ text: "LS", bold: isBold })], alignment: AlignmentType.CENTER })] }));
+      } else {
+        if (wShowSize) rowCells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: row.cells.size || "", bold: isBold })] })] }));
+        if (wShowQty) rowCells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: qtyVal > 0 ? pdfNumber(qtyVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }));
+        if (wShowRate) rowCells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: rateVal > 0 ? pdfNumber(rateVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }));
+      }
+      if (wShowAmt) rowCells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: amtVal > 0 ? formatIndianCurrency(amtVal) : "—", bold: isBold })], alignment: AlignmentType.CENTER })] }));
 
-      tableRows.push(new TableRow({ children: [srCell, particularsCell, ...middleCells, amountCell] }));
+      tableRows.push(new TableRow({ children: rowCells }));
     });
 
-    const sub = tableTotalW(table);
-    tableRows.push(
-      new TableRow({
-        children: [
-          new TableCell({ children: [new Paragraph({ text: "" })] }),
-          new TableCell({ children: [new Paragraph({ text: "" })] }),
-          new TableCell({ children: [new Paragraph({ text: "" })] }),
-          new TableCell({ children: [new Paragraph({ text: "" })] }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Total", bold: true })], alignment: AlignmentType.CENTER })] }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(sub)}/-`, bold: true })], alignment: AlignmentType.CENTER })] })
-        ]
-      })
-    );
+    // Total row: only when the Amount column is visible.
+    if (wShowAmt) {
+      const sub = tableTotalW(table);
+      const totCells: TableCell[] = [
+        new TableCell({ children: [new Paragraph({ text: "" })] }),
+        new TableCell({ children: [new Paragraph({ text: "" })] })
+      ];
+      // Fill the middle visible columns; put "Total" in the last one before Amount.
+      const midLabels: string[] = [];
+      if (wShowSize) midLabels.push("");
+      if (wShowQty) midLabels.push("");
+      if (wShowRate) midLabels.push("");
+      if (midLabels.length > 0) midLabels[midLabels.length - 1] = "Total";
+      midLabels.forEach(lbl => totCells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: lbl, bold: true })], alignment: AlignmentType.CENTER })] })));
+      if (midLabels.length === 0) {
+        // Only Sr + Particulars + Amount visible → put "Total" in Particulars cell.
+        totCells[1] = new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Total", bold: true })], alignment: AlignmentType.RIGHT })] });
+      }
+      totCells.push(new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(sub)}/-`, bold: true })], alignment: AlignmentType.CENTER })] }));
+      tableRows.push(new TableRow({ children: totCells }));
+    }
 
-    children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+    children.push(new Table({
+      rows: tableRows,
+      width: { size: tableTotalDxa, type: WidthType.DXA },
+      columnWidths: stdColWidthsDxa,
+      layout: TableLayoutType.FIXED,
+      borders: WORD_TABLE_BORDERS
+    }));
   });
 
   // Grand totals summary (Grand Total / Advance / Balance). Uses explicit column
@@ -2621,7 +2797,8 @@ export async function exportProfessionalWord(
     new Table({
       rows: summaryRows,
       columnWidths: [SUMMARY_SPACER, SUMMARY_LABEL, SUMMARY_VALUE],
-      width: { size: SUMMARY_SPACER + SUMMARY_LABEL + SUMMARY_VALUE, type: WidthType.DXA }
+      width: { size: SUMMARY_SPACER + SUMMARY_LABEL + SUMMARY_VALUE, type: WidthType.DXA },
+      borders: WORD_NO_BORDERS
     })
   );
 
@@ -2649,7 +2826,16 @@ export async function exportProfessionalWord(
     );
   }
 
-  const doc = new Document({ sections: [{ children }] });
+  const doc = new Document({
+    styles: {
+      default: {
+        document: {
+          run: { font: "Times New Roman", size: 22 }
+        }
+      }
+    },
+    sections: [{ children }]
+  });
   const blob = await Packer.toBlob(doc);
   saveAs(blob, `${filename}.docx`);
 }

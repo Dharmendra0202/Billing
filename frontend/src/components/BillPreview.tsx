@@ -1,6 +1,6 @@
 import { Fragment, useMemo } from "react";
-import type { BillDetails, BillSection, ColumnLabels, HeaderTemplate, BillFormat } from "../types";
-import { defaultColumnLabels } from "../types";
+import type { BillDetails, BillSection, ColumnLabels, ColumnVisibility, HeaderTemplate, BillFormat } from "../types";
+import { defaultColumnLabels, defaultColumnVisibility } from "../types";
 import { money, formatNumber } from "../lib/billMath";
 import { convertAllPointValues, INCH_CONVERSION_MAP } from "../lib/inchConversion";
 
@@ -38,6 +38,7 @@ type Props = {
   sections: BillSection[];
   billDetails: BillDetails;
   columnLabels?: ColumnLabels;
+  columnVisibility?: ColumnVisibility;
   billFormat?: BillFormat;
 };
 
@@ -73,7 +74,7 @@ function hasConvertiblePoints(size: string): boolean {
 }
 
 // Renders a single section table (with an optional top-left label).
-function SectionTable({ section, cols, billFormat }: { section: BillSection; cols: ColumnLabels; billFormat?: BillFormat }) {
+function SectionTable({ section, cols, vis, billFormat }: { section: BillSection; cols: ColumnLabels; vis: ColumnVisibility; billFormat?: BillFormat }) {
   const rows = section.rows as Row[];
   const applyInch = (section.mode ?? "template") !== "manual";
 
@@ -278,6 +279,17 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
 
   const subtotal = rows.reduce((s, r) => s + r.amount, 0);
 
+  // Which optional columns are visible (Sr + Particulars are always shown).
+  const showSize = vis.size !== false;
+  const showQty = vis.quantity !== false;
+  const showRate = vis.rate !== false;
+  const showAmount = vis.amount !== false;
+  // Middle columns (between Particulars and Amount) that an "LS" row merges over.
+  const lsSpan = (showSize ? 1 : 0) + (showQty ? 1 : 0) + (showRate ? 1 : 0);
+  // Total row: label sits in the second-to-last visible column, value in the last.
+  const totalCols = 2 + (showSize ? 1 : 0) + (showQty ? 1 : 0) + (showRate ? 1 : 0) + (showAmount ? 1 : 0);
+  const totalSpacer = Math.max(0, totalCols - 2);
+
   return (
     <div className="pbSectionBlock">
       {section.title.trim() && (
@@ -288,16 +300,16 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
           <tr>
             <th className="pbThSr">{cols.sr}</th>
             <th className="pbThParticulars">{cols.particulars}</th>
-            <th className="pbThSize">{cols.size}</th>
-            <th className="pbThQty">{cols.quantity}</th>
-            <th className="pbThRate">{cols.rate}</th>
-            <th className="pbThAmt">{cols.amount}</th>
+            {showSize && <th className="pbThSize">{cols.size}</th>}
+            {showQty && <th className="pbThQty">{cols.quantity}</th>}
+            {showRate && <th className="pbThRate">{cols.rate}</th>}
+            {showAmount && <th className="pbThAmt">{cols.amount}</th>}
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={6} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
+              <td colSpan={totalCols} style={{ textAlign: "center", color: "#aaa", fontStyle: "italic", padding: "12px" }}>
                 No items yet — add rows in the center panel
               </td>
             </tr>
@@ -320,10 +332,11 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                   ? <span dangerouslySetInnerHTML={{ __html: row.particulars }} />
                   : <span style={{ color: "#bbb" }}>—</span>}
               </td>
-              {isLS ? (
-                <td colSpan={3} className="pbLsCell">LS</td>
+              {isLS && lsSpan > 0 ? (
+                <td colSpan={lsSpan} className="pbLsCell">LS</td>
               ) : (
                 <>
+                  {showSize && (
                   <td className="pbSizeCell">
                     {row.size ? (() => {
                       const rowApplyInch = row.mode ? row.mode !== "manual" : applyInch;
@@ -338,18 +351,19 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
                       );
                     })() : <span style={{ color: "#bbb" }}>—</span>}
                   </td>
-                  <td className="pbQtyCell">{row.quantity || "—"}</td>
-                  <td className="pbRateCell">{row.rate > 0 ? formatNumber(row.rate) : "—"}</td>
+                  )}
+                  {showQty && <td className="pbQtyCell">{row.quantity || "—"}</td>}
+                  {showRate && <td className="pbRateCell">{row.rate > 0 ? formatNumber(row.rate) : "—"}</td>}
                 </>
               )}
-              <td className="pbAmtCell">{row.amount > 0 ? money(row.amount) : "—"}</td>
+              {showAmount && <td className="pbAmtCell">{row.amount > 0 ? money(row.amount) : "—"}</td>}
             </tr>
             );
           })}
         </tbody>
         <tfoot>
           <tr className="pbTotalRow">
-            <td colSpan={4} className="pbTotalSpacer"></td>
+            {totalSpacer > 0 && <td colSpan={totalSpacer} className="pbTotalSpacer"></td>}
             <td className="pbTotalLabel">Total</td>
             <td className="pbTotalValue">{money(subtotal).replace("₹ ", "")}</td>
           </tr>
@@ -359,8 +373,9 @@ function SectionTable({ section, cols, billFormat }: { section: BillSection; col
   );
 }
 
-export function BillPreview({ header, sections, billDetails, columnLabels, billFormat }: Props) {
+export function BillPreview({ header, sections, billDetails, columnLabels, columnVisibility, billFormat }: Props) {
   const cols = columnLabels ?? defaultColumnLabels;
+  const vis = columnVisibility ?? defaultColumnVisibility;
   const total = useMemo(() => {
     if (billFormat === "labourMaterial") {
       return sections.reduce((s, section) => s + section.rows.reduce((rs, r) => rs + (r.materialAmount || 0), 0), 0);
@@ -456,7 +471,7 @@ export function BillPreview({ header, sections, billDetails, columnLabels, billF
             {showBreak && (
               <div className="pbPageBreakMark"><span>Page {thisPage}</span></div>
             )}
-            <SectionTable section={section} cols={cols} billFormat={billFormat} />
+            <SectionTable section={section} cols={cols} vis={vis} billFormat={billFormat} />
           </Fragment>
         );
       })}

@@ -68,21 +68,19 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
       e.preventDefault();
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
-        // Toggle bold on the entire cell if no text is specifically selected
+        // Nothing highlighted → bold the entire cell contents.
         if (ref.current) {
           const range = document.createRange();
           range.selectNodeContents(ref.current);
           sel?.removeAllRanges();
           sel?.addRange(range);
-          applyBold();
-          range.collapse(false);
-          sel?.removeAllRanges();
-          sel?.addRange(range);
+          boldCurrentSelection();
         }
       } else {
-        applyBold();
+        boldCurrentSelection();
       }
-      requestAnimationFrame(emitChange);
+      // The DOM mutation is synchronous, so serialize immediately.
+      emitChange();
       return;
     }
     if (e.key === "Enter") {
@@ -137,19 +135,66 @@ export function RichTextCell({ value, onChange, onFocus, placeholder, style, cla
 }
 
 /**
- * Ask the browser to use <b> tags rather than inline CSS spans, then bold the
- * current selection. Without styleWithCSS=false Chrome emits
- * <span style="font-weight:bold"> which is harder to round-trip.
+ * Is the current selection already bold? Checks the computed font-weight of the
+ * element containing the selection start.
  */
-function applyBold(): void {
-  try { document.execCommand("styleWithCSS", false, "false"); } catch { /* not supported */ }
-  document.execCommand("bold", false);
+function isSelectionBold(): boolean {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return false;
+  const node = sel.anchorNode;
+  const el = node && node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement | null);
+  if (!el) return false;
+  const fw = window.getComputedStyle(el).fontWeight;
+  const num = parseInt(fw, 10);
+  return fw === "bold" || fw === "bolder" || (!isNaN(num) && num >= 600);
+}
+
+/**
+ * Wrap the current (non-collapsed) selection in a new element. Uses
+ * range.surroundContents when possible, else extract-and-reinsert for
+ * selections that cross element boundaries. Reselects the wrapped content.
+ * Returns true if something was wrapped.
+ */
+function wrapSelection(tag: string, style?: string): boolean {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  const range = sel.getRangeAt(0);
+  const wrapper = document.createElement(tag);
+  if (style) wrapper.setAttribute("style", style);
+  try {
+    range.surroundContents(wrapper);
+  } catch {
+    // Selection crosses element boundaries — extract then wrap.
+    const frag = range.extractContents();
+    wrapper.appendChild(frag);
+    range.insertNode(wrapper);
+  }
+  // Re-select the wrapped content so repeated toggles keep working.
+  sel.removeAllRanges();
+  const nr = document.createRange();
+  nr.selectNodeContents(wrapper);
+  sel.addRange(nr);
+  return true;
+}
+
+/**
+ * Toggle bold on the current selection using deterministic DOM manipulation
+ * (no execCommand). Bold → wrap in <b>; already-bold → wrap in a
+ * font-weight:normal span, which sanitize() interprets as "not bold" and which
+ * overrides any bold ancestor. sanitize() then normalises the markup on save.
+ */
+function boldCurrentSelection(): void {
+  if (isSelectionBold()) {
+    wrapSelection("span", "font-weight:normal");
+  } else {
+    wrapSelection("b");
+  }
 }
 
 /**
  * Toggle bold on the current selection (called from the external Bold button).
- * Restores focus to the editable element that owns the selection, applies bold,
- * then fires an input event so the owning RichTextCell saves the change.
+ * Ensures the editable host is focused with the selection intact, applies the
+ * bold, then fires an input event so the owning RichTextCell saves the change.
  */
 export function toggleBoldSelection(): void {
   const sel = window.getSelection();
@@ -164,25 +209,6 @@ export function toggleBoldSelection(): void {
   }
   if (!host) return;
 
-  if (sel.isCollapsed) {
-    // If no specific text is highlighted, toggle bold on the entire cell
-    host.focus({ preventScroll: true });
-    const range = document.createRange();
-    range.selectNodeContents(host);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    applyBold();
-    range.collapse(false);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    setTimeout(() => {
-      host.dispatchEvent(new Event("input", { bubbles: true }));
-    }, 0);
-    return;
-  }
-
-  // Preserve the exact selection range, because focusing the host can collapse
-  // the caret and make execCommand("bold") a no-op.
   const savedRange = sel.getRangeAt(0).cloneRange();
   if (document.activeElement !== host) {
     host.focus({ preventScroll: true });
@@ -190,11 +216,16 @@ export function toggleBoldSelection(): void {
     sel.addRange(savedRange);
   }
 
-  applyBold();
-  // Delay so the DOM mutation from execCommand settles before serializing.
-  setTimeout(() => {
-    host.dispatchEvent(new Event("input", { bubbles: true }));
-  }, 0);
+  if (sel.isCollapsed) {
+    // Nothing highlighted → bold the whole cell.
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  boldCurrentSelection();
+  host.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 /**
