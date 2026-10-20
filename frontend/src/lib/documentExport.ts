@@ -941,6 +941,98 @@ function computeStandardColWidthsMM(
   return { sr: srW, particulars: particularsW, size: sizeW, quantity: qtyW, rate: rateW, amount: amtW };
 }
 
+/**
+ * Let a header wrap after "/" (e.g. "Laminate/Rate" → "Laminate/" + "Rate")
+ * instead of being cut mid-word. jsPDF's splitTextToSize only breaks on spaces,
+ * so we add a space after "/" for wrapping and remove it again from each line.
+ */
+function headerWrapFriendly(label: string): string {
+  return (label || "").replace(/\/(?=\S)/g, "/ ");
+}
+function headerLines(doc: jsPDF, label: string, width: number): string[] {
+  if (label.includes("\n")) return label.split("\n");
+  // Fits as-is → keep it on one line (the helper space would make it measure wider).
+  if (doc.getTextWidth(label) <= width) return [label];
+  const lines: string[] = doc.splitTextToSize(headerWrapFriendly(label), width);
+  return lines.map(l => l.replace(/\/ /g, "/"));
+}
+
+/**
+ * Column widths (mm) for the Labour + Material format, auto-fitted to content:
+ * [Sr, Particulars, Size, Qty, LabourRate, LabourAmt, MaterialRate, MaterialAmt].
+ *
+ *   hard = minimum that never cuts a value or a header word (header 9.5pt bold),
+ *   pref = wide enough to show the whole header on one line.
+ * Each column gets `hard`; Particulars gets a healthy share; leftover widens
+ * headers toward one line; the rest goes to Particulars. Columns only shrink
+ * below `hard` as a last resort.
+ */
+function computeLabourColWidthsMM(
+  measure: (text: string, style: "normal" | "bold", fs: number) => number,
+  tables: BillTable[],
+  columns: ColumnLabels,
+  contentWidth: number
+): number[] {
+  const allRows = tables.flatMap(t => t.rows);
+  const headerFull = (label: string) => measure((label || "").replace(/\n/g, " "), "bold", 9.5);
+  const headerWord = (label: string) =>
+    headerWrapFriendly(label || "").split(/\s+/).reduce((w, word) => Math.max(w, measure(word, "bold", 9.5)), 0);
+  const widest = (fmt: (r: BillRow) => string) => allRows.reduce((w, r) => Math.max(w, measure(fmt(r), "normal", 11)), 0);
+  const num = (v: string) => { const n = parseFloat(v) || 0; return n > 0 ? pdfNumber(n) : "\u2014"; };
+
+  const sizeVal = (r: BillRow) => {
+    const s = (r.cells.size || "").trim();
+    if (s.toUpperCase() === "LS") return "";
+    const t = tables.find(tb => tb.rows.includes(r));
+    const applyInch = (r.cells.mode || t?.mode || "template") !== "manual";
+    return applyInch && s ? convertAllPointValues(s) : s;
+  };
+  // The Total row is drawn at 10pt bold — measure it exactly that way.
+  const lSub = Math.max(0, ...tables.map(t => measure(pdfCurrency(t.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0)), "bold", 10)));
+  const mSub = Math.max(0, ...tables.map(t => measure(pdfCurrency(t.rows.reduce((s, r) => s + (parseFloat(r.cells.materialAmount) || 0), 0)), "bold", 10)));
+
+  const specs: { label: string; value: number }[] = [
+    { label: columns.sr, value: widest(r => String(r.cells.sr || "")) },
+    { label: columns.size, value: widest(sizeVal) },
+    { label: columns.quantity, value: widest(r => num(r.cells.quantity)) },
+    { label: columns.labourCharges ?? "Only Labour Charges", value: widest(r => num(r.cells.labourRate)) },
+    { label: columns.labourAmount ?? "Amount", value: Math.max(widest(r => num(r.cells.labourAmount)), lSub) },
+    { label: columns.materialCharges ?? "Materials with Labour Charges", value: widest(r => num(r.cells.materialRate)) },
+    { label: columns.materialAmount ?? "Amount", value: Math.max(widest(r => num(r.cells.materialAmount)), mSub) },
+  ];
+  // Cells wrap at (width - 3mm) and headers at (width - 2mm), so give values and
+  // headers a bit more than that so they stay on one line.
+  const VAL_PAD = 3.6;
+  const HDR_PAD = 2.6;
+  const PREF_CAP = 30;
+  const hard = specs.map(sp => Math.max(sp.value + VAL_PAD, headerWord(sp.label) + HDR_PAD));
+  const pref = specs.map((sp, i) => Math.max(hard[i], Math.min(headerFull(sp.label) + HDR_PAD, PREF_CAP)));
+
+  // Priority (matches the original layout): one-line headers come before extra
+  // Particulars width; Particulars keeps at least PART_TARGET and gets the rest.
+  const PART_MIN = 28;
+  const PART_TARGET = 30;
+  const hardSum = hard.reduce((a, b) => a + b, 0);
+  let fixed: number[];
+  let part: number;
+  if (contentWidth - hardSum >= PART_MIN) {
+    const avail = contentWidth - hardSum;
+    part = Math.min(avail, PART_TARGET);
+    let slack = avail - part;
+    const extra = pref.map((p, i) => p - hard[i]);
+    const extraSum = extra.reduce((a, b) => a + b, 0);
+    const give = Math.min(slack, extraSum);
+    fixed = hard.map((h, i) => h + (extraSum > 0 ? extra[i] * (give / extraSum) : 0));
+    slack -= give;
+    part += slack;
+  } else {
+    const f = (contentWidth - PART_MIN) / hardSum;
+    fixed = hard.map(h => h * f);
+    part = PART_MIN;
+  }
+  return [fixed[0], part, fixed[1], fixed[2], fixed[3], fixed[4], fixed[5], fixed[6]];
+}
+
 /** A throwaway jsPDF measurer for Word/Excel, matching the PDF's text metrics. */
 function makeTimesMeasurer(): (text: string, style: "normal" | "bold", fs: number) => number {
   const mdoc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
@@ -950,6 +1042,108 @@ function makeTimesMeasurer(): (text: string, style: "normal" | "bold", fs: numbe
     mdoc.setFontSize(fs);
     return mdoc.getTextWidth(text || "");
   };
+}
+
+/**
+ * Compute column widths (mm) for a CUSTOM-format table, measuring actual
+ * content so every column is as wide as its widest cell.
+ *
+ * `measure(text, style, fontSize)` must return the rendered width in mm —
+ * pass a jsPDF-backed measurer for the PDF, or makeTimesMeasurer() for
+ * Word/Excel so their columns match the PDF.
+ *
+ * `tableMode` is the table's inch-conversion mode (template/manual).
+ * `contentWidth` is the available page width in mm (A4 = 170mm).
+ */
+function computeCustomColWidthsMM(
+  measure: (text: string, style: "normal" | "bold", fs: number) => number,
+  customCols: BillColumn[],
+  allRows: Array<Record<string, string>>,    // all rows' cells across every table
+  tableModes: Array<"template" | "manual">,  // one mode per table; rows are interleaved
+  contentWidth: number
+): number[] {
+  const PAD = 6;
+  const NON_PART_MIN = 14;
+  const NON_PART_CAP = 55;
+  const PART_MIN = 40;
+
+  // Format a cell value exactly as it will be drawn (number formatting, size conversion).
+  const displayVal = (c: BillColumn, raw: string, mode: "template" | "manual"): string => {
+    let v = (raw ?? "").trim();
+    if (c.kind === "number" && v === "0") return "";
+    if (!v) return "";
+    const isPureNum = /^-?\d+(\.\d+)?$/.test(v);
+    if ((c.label.toLowerCase().includes("size") || c.id === "size") && mode !== "manual") {
+      return convertAllPointValues(v);
+    }
+    if (c.kind === "number" && isPureNum) {
+      const num = parseFloat(v);
+      return c.label.toLowerCase().includes("amount") ? pdfCurrency(num) : pdfNumber(num);
+    }
+    return v;
+  };
+
+  // The column whose total is drawn in the Total row ("₹ x/-" must fit too).
+  const numNonSr = customCols.filter(c => c.kind === "number" && c.id !== "sr" && !c.label.toLowerCase().includes("sr"));
+  const totalCol = customCols.find(c => c.id === "amount" || c.label.toLowerCase().includes("amount"))
+    ?? numNonSr[numNonSr.length - 1];
+
+  const measureCol = (c: BillColumn): number => {
+    // Header (bold)
+    let w = measure(c.label || "", "bold", 11);
+    if (totalCol && c.id === totalCol.id) {
+      const sum = allRows.reduce((s, cells) => s + (parseFloat(cells[c.id]) || 0), 0);
+      w = Math.max(w, measure(pdfCurrency(sum), "bold", 10));
+    }
+    // Every cell value
+    allRows.forEach((cells, ri) => {
+      const mode = tableModes[ri] ?? "template";
+      const txt = displayVal(c, cells[c.id] ?? "", mode);
+      if (txt) w = Math.max(w, measure(txt, "normal", 11));
+    });
+    return w;
+  };
+
+  const computedWidths = customCols.map(c => {
+    const isPart = c.id.toLowerCase().includes("particular") || c.label.toLowerCase().includes("particular");
+    if (isPart) return -1; // filled from leftover
+    const measured = measureCol(c) + PAD;
+    return Math.min(Math.max(measured, NON_PART_MIN), NON_PART_CAP);
+  });
+
+  const definedSum = computedWidths.reduce((s, w) => s + (w > 0 ? w : 0), 0);
+  const partIdx = computedWidths.findIndex(w => w === -1);
+  let remaining = contentWidth - definedSum;
+
+  if (partIdx !== -1) {
+    if (remaining < PART_MIN) {
+      const shrinkTarget = contentWidth - PART_MIN;
+      const scaleF = definedSum > 0 ? Math.max(0.4, shrinkTarget / definedSum) : 1;
+      for (let i = 0; i < computedWidths.length; i++) {
+        if (computedWidths[i] > 0)
+          computedWidths[i] = Math.max(NON_PART_MIN * 0.7, computedWidths[i] * scaleF);
+      }
+      remaining = contentWidth - computedWidths.reduce((s, w) => s + (w > 0 ? w : 0), 0);
+    }
+    computedWidths[partIdx] = Math.max(PART_MIN, remaining);
+  } else {
+    // No Particulars: give leftover to the last text column.
+    const lastTextIdx = customCols.reduce((acc, c, idx) => c.kind === "text" ? idx : acc, customCols.length - 1);
+    if (remaining > 0) computedWidths[lastTextIdx] += remaining;
+  }
+
+  return computedWidths;
+}
+
+/** Build the flat (row, mode) arrays needed by computeCustomColWidthsMM from a list of BillTables. */
+function customRowsAndModes(tables: BillTable[]): { allCells: Array<Record<string, string>>; modes: Array<"template" | "manual"> } {
+  const allCells: Array<Record<string, string>> = [];
+  const modes: Array<"template" | "manual"> = [];
+  for (const t of tables) {
+    const mode = (t.mode ?? "template") === "manual" ? "manual" : "template";
+    for (const r of t.rows) { allCells.push(r.cells); modes.push(mode); }
+  }
+  return { allCells, modes };
 }
 
 export async function exportProfessionalPDF(
@@ -1114,33 +1308,30 @@ export async function exportProfessionalPDF(
     doc.setFontSize(fs);
     return doc.getTextWidth(text || "");
   };
-  const cw = computeStandardColWidthsMM(measurePdf, tables, columns, stdVis, contentWidth);
-  const srW = cw.sr, particularsW = cw.particulars, sizeW = cw.size, qtyW = cw.quantity, rateW = cw.rate, amtW = cw.amount;
-  const colWidths = [srW, particularsW, sizeW, qtyW, rateW, amtW];
-  const colX = [
-    margin + 2, // Sr. No
-    margin + colWidths[0] + 2, // Particulars
-    margin + colWidths[0] + colWidths[1] + 2, // Size
-    margin + colWidths[0] + colWidths[1] + colWidths[2] + 2, // Quantity
-    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + 2, // Rate
-    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + 2 // Amount
-  ];
-
-  // Calculate vertical line X coordinates
-  const verticalX = [
-    margin,
-    margin + colWidths[0],
-    margin + colWidths[0] + colWidths[1],
-    margin + colWidths[0] + colWidths[1] + colWidths[2],
-    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3],
-    margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4],
-    pageWidth - margin
-  ];
-
-  // Horizontal centres of each column (used when drawing wrapped cell text).
+  // Column layout. Widths are computed for text at scale `s` (shrink/grow-to-fit):
+  // we lay the table out for a virtual width of contentWidth / s at normal 11pt,
+  // then multiply every width by s. So when fonts grow, numeric columns grow with
+  // them and Particulars absorbs the difference — text can never overflow.
+  let colWidths: number[] = [];
+  let colX: number[] = [];
+  let verticalX: number[] = [];
+  let layoutScale = 1;
+  let flexColIdx = 1; // column that absorbs leftover width (Particulars)
+  let srCenterX = 0, sizeCenterX = 0, qtyCenterX = 0, rateCenterX = 0, amtCenterX = 0;
   // For Labour + Material format we override colWidths/verticalX with 8 columns:
   // Sr | Particulars | Size | Quantity | Only Labour | Amount | Materials w/ Labour | Amount
   let labourCenterX = 0, labourAmtCenterX = 0, materialCenterX = 0, materialAmtCenterX = 0;
+
+  const layoutColumns = (scaleIn: number, _rawLayout: boolean = false): void => {
+  // Columns are sized for the text size actually printed (scale s): number
+  // columns get exactly what their values/headers need at that size, and
+  // Particulars receives everything left over. Smaller text → wider Particulars.
+  const s = scaleIn;
+  layoutScale = s;
+  const layoutW = contentWidth / s;
+  const cw = computeStandardColWidthsMM(measurePdf, tables, columns, stdVis, layoutW);
+  colWidths = [cw.sr, cw.particulars, cw.size, cw.quantity, cw.rate, cw.amount];
+  flexColIdx = 1;
   if (isCustomFormat) {
     const customCols = (tables[0]?.columns && tables[0].columns.length > 0)
       ? tables[0].columns
@@ -1150,169 +1341,33 @@ export async function exportProfessionalPDF(
           { id: "amount", label: columns.amount, kind: "number" as const }
         ];
 
-    const cw = contentWidth;
-    const allCustomRows = tables.flatMap(t => t.rows);
-
-    // Format a cell exactly like it will be drawn, so measurement matches output.
-    const displayForMeasure = (c: BillColumn, raw: string): string => {
-      let v = (raw ?? "").trim();
-      if (c.kind === "number" && v === "0") v = ""; // bare 0 = not filled
-      if (v === "") return "";
-      const isPureNumber = /^-?\d+(\.\d+)?$/.test(v);
-      if (c.label.toLowerCase().includes("size") || c.id === "size") {
-        const applyInchM = (tables[0]?.mode ?? "template") !== "manual";
-        return applyInchM ? convertAllPointValues(v) : v;
-      }
-      if (c.kind === "number" && isPureNumber) {
-        const num = parseFloat(v);
-        return c.label.toLowerCase().includes("amount") ? pdfCurrency(num) : pdfNumber(num);
-      }
-      return v; // verbatim text
-    };
-
-    // Measure the widest text a column needs: its header label and every cell.
-    const measureColWidth = (c: BillColumn): number => {
-      doc.setFont("times", "bold");
-      doc.setFontSize(11);
-      let w = doc.getTextWidth(c.label || "");
-      doc.setFont("times", "normal");
-      for (const r of allCustomRows) {
-        const txt = displayForMeasure(c, r.cells[c.id] ?? "");
-        if (txt) w = Math.max(w, doc.getTextWidth(txt));
-      }
-      return w;
-    };
-
-    const PAD = 6;            // breathing room inside each column
-    const NON_PART_MIN = 14;  // minimum width for a non-particulars column
-    const NON_PART_CAP = 55;  // don't let a single column hog everything
-    const PART_MIN = 40;      // Particulars keeps at least this much
-
-    const computedWidths = customCols.map((c) => {
-      const isPart = c.id.toLowerCase().includes("particular") || c.label.toLowerCase().includes("particular");
-      if (isPart) return -1; // filled from leftover space
-      const measured = measureColWidth(c) + PAD;
-      return Math.min(Math.max(measured, NON_PART_MIN), NON_PART_CAP);
-    });
-
-    const definedSum = computedWidths.reduce((sum, w) => sum + (w > 0 ? w : 0), 0);
-    const partIdx = computedWidths.findIndex(w => w === -1);
-    let remaining = cw - definedSum;
-
-    if (partIdx !== -1) {
-      // Give Particulars the leftover; if that's below its minimum, shrink the
-      // other columns proportionally so Particulars still fits.
-      if (remaining < PART_MIN) {
-        const shrinkTarget = cw - PART_MIN;
-        const scaleF = definedSum > 0 ? Math.max(0.4, shrinkTarget / definedSum) : 1;
-        for (let i = 0; i < computedWidths.length; i++) {
-          if (computedWidths[i] > 0) computedWidths[i] = Math.max(NON_PART_MIN * 0.7, computedWidths[i] * scaleF);
-        }
-        remaining = cw - computedWidths.reduce((s, w) => s + (w > 0 ? w : 0), 0);
-      }
-      computedWidths[partIdx] = Math.max(PART_MIN, remaining);
-    } else {
-      // No Particulars column: distribute any leftover to the last text column.
-      const lastTextIdx = customCols.reduce((acc, c, idx) => c.kind === "text" ? idx : acc, customCols.length - 1);
-      if (remaining > 0) computedWidths[lastTextIdx] += remaining;
-    }
-
-    (colWidths as any).length = 0;
-    computedWidths.forEach(w => (colWidths as any).push(w));
-
-    (colX as any).length = 0;
-    let cumX = margin + 2;
-    for (let i = 0; i < colWidths.length; i++) { (colX as any).push(cumX); cumX += colWidths[i]; }
-
-    (verticalX as any).length = 0;
-    let vx = margin;
-    for (let i = 0; i < colWidths.length; i++) { (verticalX as any).push(vx); vx += colWidths[i]; }
-    (verticalX as any).push(pageWidth - margin);
+    const { allCells, modes } = customRowsAndModes(tables);
+    colWidths = computeCustomColWidthsMM(measurePdf, customCols, allCells, modes, layoutW);
+    const pIdx = customCols.findIndex(c => c.id.toLowerCase().includes("particular") || c.label.toLowerCase().includes("particular"));
+    flexColIdx = pIdx !== -1 ? pIdx : customCols.reduce((acc, c, idx) => c.kind === "text" ? idx : acc, customCols.length - 1);
   } else if (isLabourFormat) {
-    // Auto-measure the 8 columns so headers and values are never cut off, and
-    // the table always fits within the page. Particulars takes the leftover.
-    const cw = contentWidth;
-    const allLRows = tables.flatMap(t => t.rows);
-
-    // Header width contribution: prefer fitting the WHOLE label on one line, but
-    // cap it so very long headers (e.g. "Materials with Labour Charges") wrap
-    // instead of stretching the column. `cap` is the column's own max width.
-    const headerWidth = (label: string, cap: number): number => {
-      doc.setFont("times", "bold");
-      doc.setFontSize(9.5);
-      const full = doc.getTextWidth(label || "");
-      const longestWord = (label || "").split(/\s+/).reduce((w, word) => Math.max(w, doc.getTextWidth(word)), 0);
-      // Never below the longest single word (avoids mid-word cut), never above the cap.
-      return Math.min(Math.max(full, longestWord), cap);
-    };
-    // Widest formatted value in a column across all rows.
-    const widestValue = (fmt: (r: BillRow) => string): number => {
-      doc.setFont("times", "normal");
-      doc.setFontSize(11);
-      return allLRows.reduce((w, r) => Math.max(w, doc.getTextWidth(fmt(r))), 0);
-    };
-
-    const lRate = (r: BillRow) => { const v = parseFloat(r.cells.labourRate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
-    const lAmt  = (r: BillRow) => { const v = parseFloat(r.cells.labourAmount) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
-    const mRate = (r: BillRow) => { const v = parseFloat(r.cells.materialRate) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
-    const mAmt  = (r: BillRow) => { const v = parseFloat(r.cells.materialAmount) || 0; return v > 0 ? pdfNumber(v) : "\u2014"; };
-    const applyInch0 = (tables[0]?.mode ?? "template") !== "manual";
-    const sizeVal = (r: BillRow) => { const s = (r.cells.size || "").trim(); if (s.toUpperCase() === "LS") return ""; return (applyInch0 && s ? convertAllPointValues(s) : s); };
-    const qtyVal = (r: BillRow) => { const q = parseFloat(r.cells.quantity) || 0; return q > 0 ? pdfNumber(q) : "\u2014"; };
-    const srVal = (r: BillRow) => String(r.cells.sr || "");
-
-    // Include table subtotals so amount columns fit the Total row too.
-    const lSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.labourAmount) || 0), 0));
-    const mSubtotals = tables.map(t => t.rows.reduce((s, r) => s + (parseFloat(r.cells.materialAmount) || 0), 0));
-    doc.setFont("times", "normal"); doc.setFontSize(11);
-    // Row amounts are plain numbers; only the Total row uses ₹, so measure both
-    // and take the wider so the Total still fits.
-    const widestLSub = lSubtotals.reduce((w, s) => Math.max(w, doc.getTextWidth(pdfCurrency(s))), 0);
-    const widestMSub = mSubtotals.reduce((w, s) => Math.max(w, doc.getTextWidth(pdfCurrency(s))), 0);
-
-    const PAD = 5;
-    const clamp = (v: number, min: number, max: number) => Math.max(Math.min(v, max), min);
-
-    const srWL   = clamp(Math.max(headerWidth(columns.sr, 18), widestValue(srVal)) + PAD, 11, 18);
-    // Size must comfortably fit values like "6.25 x 5.25" on one line.
-    const sizeWL = clamp(Math.max(headerWidth(columns.size, 30), widestValue(sizeVal)) + PAD, 20, 32);
-    const qtyWL  = clamp(Math.max(headerWidth(columns.quantity, 24), widestValue(qtyVal)) + PAD, 15, 24);
-    const labourWL    = clamp(Math.max(headerWidth(columns.labourCharges ?? "Only Labour Charges", 26), widestValue(lRate)) + PAD, 15, 26);
-    const labourAmtWL = clamp(Math.max(headerWidth(columns.labourAmount ?? "Amount", 26), widestValue(lAmt), widestLSub) + PAD, 16, 28);
-    const matWL       = clamp(Math.max(headerWidth(columns.materialCharges ?? "Materials with Labour Charges", 26), widestValue(mRate)) + PAD, 15, 26);
-    const matAmtWL    = clamp(Math.max(headerWidth(columns.materialAmount ?? "Amount", 26), widestValue(mAmt), widestMSub) + PAD, 16, 28);
-
-    let fixedSum = srWL + sizeWL + qtyWL + labourWL + labourAmtWL + matWL + matAmtWL;
-    const PART_MIN = 30;
-    let partWL = cw - fixedSum;
-    if (partWL < PART_MIN) {
-      // Scale the numeric columns down proportionally so Particulars still fits.
-      const target = cw - PART_MIN;
-      const f = fixedSum > 0 ? target / fixedSum : 1;
-      const scaled = [srWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].map(w => w * f);
-      (colWidths as any).length = 0;
-      [scaled[0], PART_MIN, scaled[1], scaled[2], scaled[3], scaled[4], scaled[5], scaled[6]].forEach(w => (colWidths as any).push(w));
-    } else {
-      (colWidths as any).length = 0;
-      [srWL, partWL, sizeWL, qtyWL, labourWL, labourAmtWL, matWL, matAmtWL].forEach(w => (colWidths as any).push(w));
-    }
-    // Rebuild colX and verticalX for 8 columns
-    (colX as any).length = 0;
-    let cumX = margin + 2;
-    for (let i = 0; i < colWidths.length; i++) { (colX as any).push(cumX); cumX += colWidths[i]; }
-    (verticalX as any).length = 0;
-    let vx = margin;
-    for (let i = 0; i < colWidths.length; i++) { (verticalX as any).push(vx); vx += colWidths[i]; }
-    (verticalX as any).push(pageWidth - margin);
+    colWidths = computeLabourColWidthsMM(measurePdf, tables, columns, layoutW);
   }
 
-  const srCenterX = margin + colWidths[0] / 2;
-  const sizeCenterX = isLabourFormat
-    ? margin + colWidths[0] + colWidths[1] + colWidths[2] / 2
-    : margin + colWidths[0] + colWidths[1] + colWidths[2] / 2;
-  const qtyCenterX = isLabourFormat
-    ? margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2
-    : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] / 2;
+  // Scale the virtual layout back up to real page width. Snap the flex column so
+  // the table spans exactly contentWidth (no rounding gap at the right edge).
+  colWidths = colWidths.map(w => w * s);
+  const otherSum = colWidths.reduce((acc, w, i) => acc + (i === flexColIdx ? 0 : w), 0);
+  colWidths[flexColIdx] = Math.max(contentWidth - otherSum, 10);
+
+  colX = [];
+  verticalX = [];
+  let cumX = margin;
+  for (let i = 0; i < colWidths.length; i++) {
+    colX.push(cumX + 2);
+    verticalX.push(cumX);
+    cumX += colWidths[i];
+  }
+  verticalX.push(pageWidth - margin);
+
+  srCenterX = margin + colWidths[0] / 2;
+  sizeCenterX = margin + colWidths[0] + colWidths[1] + (colWidths[2] ?? 0) / 2;
+  qtyCenterX = margin + colWidths[0] + colWidths[1] + (colWidths[2] ?? 0) + (colWidths[3] ?? 0) / 2;
   if (isLabourFormat) {
     const base = margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3];
     labourCenterX = base + colWidths[4] / 2;
@@ -1320,8 +1375,10 @@ export async function exportProfessionalPDF(
     materialCenterX = base + colWidths[4] + colWidths[5] + colWidths[6] / 2;
     materialAmtCenterX = base + colWidths[4] + colWidths[5] + colWidths[6] + colWidths[7] / 2;
   }
-  const rateCenterX = isLabourFormat ? 0 : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2;
-  const amtCenterX = isLabourFormat ? 0 : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2;
+  rateCenterX = isLabourFormat || isCustomFormat ? 0 : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] / 2;
+  amtCenterX = isLabourFormat || isCustomFormat ? 0 : margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5] / 2;
+  };
+  layoutColumns(1);
 
   const headerHeight = 6.5;
   const minRowHeight = 6;
@@ -1330,13 +1387,16 @@ export async function exportProfessionalPDF(
 
   // Draws a shaded, bordered column-header row starting at the current yPos.
   // Returns the y-coordinate at the top of the header (for vertical line drawing).
-  const drawTableHeader = (scale: number = 1): number => {
+  const drawTableHeader = (scale: number = 1, forTable?: BillTable): number => {
     const headerFontSize = (isLabourFormat ? 9.5 : 11) * scale;
     doc.setFont("times", "bold");
     doc.setFontSize(headerFontSize);
 
     // Build the label list and centres depending on the format.
-    const customCols = isCustomFormat && tables[0]?.columns?.length ? tables[0].columns : null;
+    // For custom format, use THIS table's columns (not tables[0]) so multiple
+    // custom tables with different column schemas each draw their own header.
+    const hdrTable = forTable ?? tables[0];
+    const customCols = isCustomFormat && hdrTable?.columns?.length ? hdrTable.columns : null;
     const labels = customCols
       ? customCols.map(c => c.label)
       : isLabourFormat
@@ -1350,8 +1410,7 @@ export async function exportProfessionalPDF(
     const labelLines = colWidths.map((w, i) => {
       const text = visLabels[i] || "";
       if (!text) return [""];
-      if (text.includes("\n")) return text.split("\n");
-      return doc.splitTextToSize(text, Math.max(w - 2, 6));
+      return headerLines(doc, text, Math.max(w - 2 * scale, 6 * scale));
     });
     const maxLines = Math.max(1, ...labelLines.map(l => l.length));
     const hLineSpacing = headerFontSize * 0.42;
@@ -1410,6 +1469,34 @@ export async function exportProfessionalPDF(
   // it is genuinely taller than a full page, it flows and splits between rows).
   const drawSectionTable = (table: BillTable, reserveBelow: number = 0, scale: number = 1): number => {
     const fitMode = scale !== 1;
+
+    // Custom format: tables normally share one layout (measured across ALL tables,
+    // so every table lines up). Only when a table has a DIFFERENT column schema
+    // than the first table do we lay it out separately.
+    if (isCustomFormat && table.columns?.length) {
+      const baseIds = (tables[0]?.columns ?? []).map(c => c.id).join("|");
+      const thisIds = table.columns.map(c => c.id).join("|");
+      if (thisIds !== baseIds) {
+        const tableMode = (table.mode ?? "template") === "manual" ? "manual" : "template";
+        const ls = scale; // same rule as layoutColumns
+        const vW = contentWidth / ls;
+        const widths = computeCustomColWidthsMM(measurePdf, table.columns, table.rows.map(r => r.cells), table.rows.map(() => tableMode), vW).map(w => w * ls);
+        const pIdx = table.columns.findIndex(c => c.id.toLowerCase().includes("particular") || c.label.toLowerCase().includes("particular"));
+        const fIdx = pIdx !== -1 ? pIdx : widths.length - 1;
+        const others = widths.reduce((a, w, i) => a + (i === fIdx ? 0 : w), 0);
+        widths[fIdx] = Math.max(contentWidth - others, 10);
+        colWidths = widths;
+        colX = []; verticalX = [];
+        let cx = margin;
+        for (let i = 0; i < colWidths.length; i++) { colX.push(cx + 2); verticalX.push(cx); cx += colWidths[i]; }
+        verticalX.push(pageWidth - margin);
+      } else {
+        layoutColumns(scale);
+      }
+    } else {
+      layoutColumns(scale);
+    }
+
     // Pre-measure each data row's natural height (accounts for multi-line text).
     // Fonts and heights are multiplied by `scale` (1 = normal size).
     // Normal cell font geometry (Sr / Size / Quantity / Rate / Amount).
@@ -1428,7 +1515,7 @@ export async function exportProfessionalPDF(
       const richLines = parseRichLines(row.cells.particulars || "", isBold);
       const wrappedVisualRows: RichLine[] = [];
       for (const rl of richLines) {
-        wrappedVisualRows.push(...wrapRichLine(doc, rl, partColW - 4, fontSize));
+        wrappedVisualRows.push(...wrapRichLine(doc, rl, partColW - 4 * scale, fontSize));
       }
       const richSegments = parseRichText(row.cells.particulars || "");
       const plainParticulars = getPlainText(row.cells.particulars || "");
@@ -1457,11 +1544,11 @@ export async function exportProfessionalPDF(
         const w = colWidths[i];
         return (typeof w === "number" && !isNaN(w) && w > 0) ? w : fallback;
       };
-      const srLines = doc.splitTextToSize(String(row.cells.sr || index + 1), cw(0, 12) - 2);
-      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, cw(2, 20) - 3) : [];
-      const qtyLines = !isLSRow ? doc.splitTextToSize(quantity > 0 ? pdfNumber(quantity) : "\u2014", cw(3, 16) - 3) : [];
-      const rateLines = !isLSRow ? doc.splitTextToSize(rate > 0 ? pdfNumber(rate) : "\u2014", cw(4, 16) - 3) : [];
-      const amtLines = doc.splitTextToSize(amount > 0 ? pdfCurrency(amount) : "\u2014", cw(5, 22) - 3);
+      const srLines = doc.splitTextToSize(String(row.cells.sr || index + 1), cw(0, 12) - 2 * scale);
+      const sizeLines = sizeStr && !isLSRow ? doc.splitTextToSize(sizeStr, cw(2, 20) - 3 * scale) : [];
+      const qtyLines = !isLSRow ? doc.splitTextToSize(quantity > 0 ? pdfNumber(quantity) : "\u2014", cw(3, 16) - 3 * scale) : [];
+      const rateLines = !isLSRow ? doc.splitTextToSize(rate > 0 ? pdfNumber(rate) : "\u2014", cw(4, 16) - 3 * scale) : [];
+      const amtLines = doc.splitTextToSize(amount > 0 ? pdfCurrency(amount) : "\u2014", cw(5, 22) - 3 * scale);
 
       // Row height fits the tallest cell across all columns.
       const maxTextHeight = Math.max(
@@ -1483,10 +1570,10 @@ export async function exportProfessionalPDF(
           doc.setFont("times", "normal");
           doc.setFontSize(nfs);
           subRowsData = subs.map(sub => {
-            const subPartLines = doc.splitTextToSize(sub.particulars || "", partColW - 4);
+            const subPartLines = doc.splitTextToSize(sub.particulars || "", partColW - 4 * scale);
             const subSizeRaw = sub.size || "";
             const subSizeStr = (!isLSRow && applyInch && subSizeRaw) ? convertAllPointValues(subSizeRaw) : subSizeRaw;
-            const subSizeLines = subSizeStr ? doc.splitTextToSize(subSizeStr, ((typeof colWidths[2] === "number" && colWidths[2] > 0) ? colWidths[2] : 20) - 3) : [];
+            const subSizeLines = subSizeStr ? doc.splitTextToSize(subSizeStr, ((typeof colWidths[2] === "number" && colWidths[2] > 0) ? colWidths[2] : 20) - 3 * scale) : [];
             const subH = Math.max(
               heightOf(subPartLines.length, nLineSpacing, nCapHeight),
               heightOf(subSizeLines.length, nLineSpacing, nCapHeight)
@@ -1577,7 +1664,7 @@ export async function exportProfessionalPDF(
       yPos += 7 * scale;
     }
 
-    drawTableHeader(scale);
+    drawTableHeader(scale, table);
     let subtotal = 0;
 
     measured.forEach((m, index) => {
@@ -1589,7 +1676,7 @@ export async function exportProfessionalPDF(
       if (!compressed && yPos + rowHeight > pageBottom) {
         doc.addPage();
         yPos = 20;
-        drawTableHeader();
+        drawTableHeader(scale, table);
       }
 
       const yTop = yPos;
@@ -1634,7 +1721,7 @@ export async function exportProfessionalPDF(
             const isRowBold = (m.row as any).bold === true || m.row.cells?.bold === "true";
             const richLines = parseRichLines(rawVal || "", isRowBold);
             const wrappedVisualRows: RichLine[] = [];
-            const colW = Math.max(colWidths[ci] - 3, 5);
+            const colW = Math.max(colWidths[ci] - 3 * scale, 5);
             for (const rl of richLines) {
               wrappedVisualRows.push(...wrapRichLine(doc, rl, colW, nfs));
             }
@@ -1645,7 +1732,7 @@ export async function exportProfessionalPDF(
           } else {
             if (valStr.trim() === "") return; // leave empty cells blank (no em-dash)
             doc.setFont("times", "normal");
-            const lines = doc.splitTextToSize(valStr, Math.max(colWidths[ci] - 3, 5));
+            const lines = doc.splitTextToSize(valStr, Math.max(colWidths[ci] - 3 * scale, 5));
             doc.text(lines, drawPosX, baselineFor(lines.length, nLineSpacing, nCapHeight), { align: alignOpt });
           }
         });
@@ -1836,11 +1923,14 @@ export async function exportProfessionalPDF(
 
   // Real printed height of the column-header row (accounts for multi-line wrapped
   // labels, e.g. labour's "Materials with Labour Charges"). Mirrors drawTableHeader.
-  const computeHeaderBlockHeight = (scale: number = 1): number => {
+  const computeHeaderBlockHeight = (scale: number = 1, forTable?: BillTable): number => {
     const headerFontSize = (isLabourFormat ? 9.5 : 11) * scale;
     doc.setFont("times", "bold");
     doc.setFontSize(headerFontSize);
-    const customCols = isCustomFormat && tables[0]?.columns?.length ? tables[0].columns : null;
+    // Use the passed table's columns for custom format, so each table's own
+    // schema drives the header height estimate.
+    const tbl = forTable ?? tables[0];
+    const customCols = isCustomFormat && tbl?.columns?.length ? tbl.columns : null;
     const labels = customCols
       ? customCols.map(c => c.label)
       : isLabourFormat
@@ -1848,14 +1938,13 @@ export async function exportProfessionalPDF(
       : [columns.sr, columns.particulars, columns.size, columns.quantity, columns.rate, columns.amount];
     const labelLines = colWidths.map((w, i) => {
       const text = labels[i] || "";
-      if (text.includes("\n")) return text.split("\n");
-      return doc.splitTextToSize(text, Math.max(w - 2, 6));
+      // Virtual (unscaled) width so the line count matches the scaled drawing.
+      return headerLines(doc, text, Math.max(w / layoutScale - 2, 6));
     });
     const maxLines = Math.max(1, ...labelLines.map(l => l.length));
     const hLineSpacing = headerFontSize * 0.42;
     return Math.max(headerHeight * scale, (maxLines - 1) * hLineSpacing + headerFontSize * 0.25 + 3.2 * scale);
   };
-  const realHeaderHeight = computeHeaderBlockHeight(1);
 
   // Natural (unscaled) printed height of one table.
   const measureTableNatural = (table: BillTable): number => {
@@ -1866,7 +1955,8 @@ export async function exportProfessionalPDF(
       const richLines = parseRichLines(row.cells.particulars || "", isBold);
       const wrappedVisualRows: RichLine[] = [];
       for (const rl of richLines) {
-        wrappedVisualRows.push(...wrapRichLine(doc, rl, colWidths[1] - 4, fontSize));
+        // Measure in the virtual (unscaled) layout: real width / layoutScale.
+        wrappedVisualRows.push(...wrapRichLine(doc, rl, colWidths[flexColIdx] / layoutScale - 4, fontSize));
       }
       const lineSpacing = fontSize * 0.405;
       const capHeight = fontSize * 0.25;
@@ -1879,14 +1969,15 @@ export async function exportProfessionalPDF(
       const sizeStrM = (!isLSRowM && applyInchM && sizeRawM) ? convertAllPointValues(sizeRawM) : sizeRawM;
       doc.setFont("times", "normal");
       doc.setFontSize(11);
-      const sizeLines = sizeStrM && !isLSRowM ? doc.splitTextToSize(sizeStrM, colWidths[2] - 3) : [];
+      const sizeLines = sizeStrM && !isLSRowM && !isCustomFormat ? doc.splitTextToSize(sizeStrM, Math.max((colWidths[2] ?? 20) / layoutScale - 3, 5)) : [];
       const sizeTextHeight = sizeLines.length > 0 ? (sizeLines.length - 1) * (11 * 0.405) + 11 * 0.25 : 0;
       rowsH += Math.max(Math.max(textHeight, sizeTextHeight) + 2.5, minRowHeight);
     });
     const labelH = (table.title && table.title.trim()) ? 7 : 0;
     const totalRowH = (isCustomFormat && table.showTableTotal === false) ? 0 : minRowHeight;
-    // Use the REAL header height (labour headers wrap to 2-3 lines).
-    return labelH + realHeaderHeight + rowsH + totalRowH;
+    // Header height for the CURRENT layout (labels wrap differently per scale).
+    const hdrH = computeHeaderBlockHeight(1, table);
+    return labelH + hdrH + rowsH + totalRowH;
   };
 
   // Partition tables into page groups using their page numbers. Tables that share
@@ -1920,22 +2011,51 @@ export async function exportProfessionalPDF(
   let uniformScale = 1;
   if (shrinkToFit) {
     const firstGroupStartY = yPos; // page 1 begins below the letterhead/subject
-    let bestScale = MAX_GROW; // start high; each group pulls it down to what fits
-    groups.forEach((group, gi) => {
-      const isLastGroup = gi === groups.length - 1;
-      const startY = gi === 0 ? firstGroupStartY : 20; // later groups start fresh
-      const naturalGroupHeight =
-        group.reduce((s, t) => s + measureTableNatural(t), 0) + 15 * Math.max(0, group.length - 1);
-      const endLimit = isLastGroup
-        ? (billDetails.showSignature ? 236 : pageBottom - 6) - GRAND_SUMMARY_RESERVE - noteReserve
-        : pageBottom - 6;
-      const availableForGroup = endLimit - startY;
-      if (availableForGroup > 0 && naturalGroupHeight > 0) {
-        const ratio = availableForGroup / naturalGroupHeight;
-        bestScale = Math.min(bestScale, ratio);
-      }
-    });
-    uniformScale = Math.max(MIN_SHRINK, Math.min(MAX_GROW, bestScale));
+    // Largest scale at which every page-group fits, for the CURRENT column layout.
+    const fitScaleForLayout = (): number => {
+      let best = MAX_GROW;
+      groups.forEach((group, gi) => {
+        const isLastGroup = gi === groups.length - 1;
+        const startY = gi === 0 ? firstGroupStartY : 20; // later groups start fresh
+        const naturalGroupHeight =
+          group.reduce((s, t) => s + measureTableNatural(t), 0) + 15 * Math.max(0, group.length - 1);
+        const endLimit = isLastGroup
+          ? (billDetails.showSignature ? 236 : pageBottom - 6) - GRAND_SUMMARY_RESERVE - noteReserve
+          : pageBottom - 6;
+        const availableForGroup = endLimit - startY;
+        if (availableForGroup > 0 && naturalGroupHeight > 0) {
+          best = Math.min(best, availableForGroup / naturalGroupHeight);
+        }
+      });
+      return Math.max(MIN_SHRINK, Math.min(MAX_GROW, best));
+    };
+    // Columns depend on the scale (bigger text → wider numeric columns → narrower
+    // Particulars → more wrapped lines), so iterate to a scale that truly fits.
+    // Natural width each non-flex column wants (layout on an effectively
+    // unlimited virtual width, so nothing gets compressed).
+    layoutColumns(0.02, true);
+    const naturalNeeds = colWidths.map(w => w / 0.02);
+    const naturalFlex = flexColIdx;
+    // Growing text must never force the numeric columns below what their
+    // content needs (that's what made values/totals spill over the lines).
+    const compressedAt = (s: number): boolean => {
+      layoutColumns(s);
+      if (flexColIdx !== naturalFlex || colWidths.length !== naturalNeeds.length) return false;
+      return colWidths.some((w, i) => i !== flexColIdx && w / s < naturalNeeds[i] - 0.05);
+    };
+
+    layoutColumns(1);
+    let s = fitScaleForLayout();
+    for (let iter = 0; iter < 6; iter++) {
+      layoutColumns(s);
+      const next = fitScaleForLayout();
+      if (next >= s - 0.005) break; // stable: this layout fits at s
+      s = next;
+    }
+    // Only limit GROWTH (s > 1); at s <= 1 behaviour is unchanged.
+    while (s > 1 && compressedAt(s)) s = Math.max(1, s - 0.02);
+    uniformScale = s;
+    layoutColumns(1); // restore; drawSectionTable lays out at its own scale
   }
 
   // ── Pass 2: draw every group at the uniform scale ──────────────────────────
@@ -2075,13 +2195,18 @@ export async function exportProfessionalExcel(
   let LAST_COL = "F";
   if (isLabourFormat) {
     LAST_COL = "H";
-    ws.columns = [
-      { width: 8 }, { width: 35 }, { width: 12 }, { width: 10 }, { width: 14 }, { width: 14 }, { width: 16 }, { width: 14 }
-    ];
+    // Same content-fitted widths as the PDF (mm → Excel char units).
+    const lw = computeLabourColWidthsMM(makeTimesMeasurer(), tables, columns, 170);
+    ws.columns = lw.map(w => ({ width: Math.max(4, w * 0.62) }));
   } else if (isCustomFormat && tables[0]?.columns?.length) {
-    const colCount = tables[0].columns.length;
+    // Custom format: measure content to size each column, matching the PDF.
+    const customCols = tables[0].columns;
+    const { allCells, modes } = customRowsAndModes(tables);
+    const xCW = computeCustomColWidthsMM(makeTimesMeasurer(), customCols, allCells, modes, 170);
+    const mmToExcel = (mm: number) => Math.max(4, mm * 0.62);
+    const colCount = customCols.length;
     LAST_COL = String.fromCharCode(64 + Math.min(colCount, 26));
-    ws.columns = tables[0].columns.map(c => ({ width: c.kind === "number" ? 14 : 30 }));
+    ws.columns = xCW.map(w => ({ width: mmToExcel(w) }));
   } else {
     // Standard format: derive column widths from the SAME mm computation the PDF
     // uses, so Excel proportions match the PDF. mm → Excel char-width units.
@@ -2570,12 +2695,17 @@ export async function exportProfessionalWord(
 
     if (isCustomFormat) {
       const cols = table.columns;
-      const colWidth = Math.floor(100 / cols.length);
+      // Content-measured column widths that match the PDF (mm → DXA).
+      const { allCells, modes } = customRowsAndModes([table]);
+      const cwMM = computeCustomColWidthsMM(makeTimesMeasurer(), cols, allCells, modes, WORD_CONTENT_MM);
+      const colDxa = cwMM.map(w => mmToDxa(w));
+      const tableTotalDxaC = colDxa.reduce((s, w) => s + w, 0);
+
       const customHeaderRow = new TableRow({
-        children: cols.map(c => new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: c.label, bold: true })], alignment: c.kind === "number" ? AlignmentType.RIGHT : AlignmentType.LEFT })],
+        children: cols.map((c, ci) => new TableCell({
+          children: [new Paragraph({ children: [new TextRun({ text: c.label, bold: true })], alignment: c.kind === "number" ? AlignmentType.CENTER : AlignmentType.LEFT })],
           shading: { fill: "F0F0F0" },
-          width: { size: colWidth, type: WidthType.PERCENTAGE }
+          width: { size: colDxa[ci], type: WidthType.DXA }
         }))
       });
 
@@ -2596,9 +2726,9 @@ export async function exportProfessionalWord(
           return new TableCell({
             children: [new Paragraph({
               children: isPartCol ? richTextToDocxRuns(val, undefined, isBold) : [new TextRun({ text: displayVal, bold: isBold })],
-              alignment: isNum ? AlignmentType.RIGHT : AlignmentType.LEFT
+              alignment: isNum ? AlignmentType.CENTER : AlignmentType.LEFT
             })],
-            width: { size: colWidth, type: WidthType.PERCENTAGE }
+            width: { size: colDxa[cols.indexOf(c)], type: WidthType.DXA }
           });
         });
         tableRows.push(new TableRow({ children: cells }));
@@ -2609,33 +2739,40 @@ export async function exportProfessionalWord(
           if (c.kind === "number") {
             const colSum = table.rows.reduce((s, r) => s + (parseFloat(r.cells[c.id]) || 0), 0);
             return new TableCell({
-              children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(colSum)}/-`, bold: true })], alignment: AlignmentType.RIGHT })],
-              width: { size: colWidth, type: WidthType.PERCENTAGE }
+              children: [new Paragraph({ children: [new TextRun({ text: `${formatIndianNumber(colSum)}/-`, bold: true })], alignment: AlignmentType.CENTER })],
+              width: { size: colDxa[idx], type: WidthType.DXA }
             });
           }
           return new TableCell({
             children: [new Paragraph({ children: [new TextRun({ text: idx === 0 ? "Total" : "", bold: true })] })],
-            width: { size: colWidth, type: WidthType.PERCENTAGE }
+            width: { size: colDxa[idx], type: WidthType.DXA }
           });
         });
         tableRows.push(new TableRow({ children: totalCells }));
       }
 
-      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: WORD_TABLE_BORDERS }));
+      children.push(new Table({
+        rows: tableRows,
+        width: { size: tableTotalDxaC, type: WidthType.DXA },
+        columnWidths: colDxa,
+        layout: TableLayoutType.FIXED,
+        borders: WORD_TABLE_BORDERS
+      }));
       return;
     }
 
     if (isLabourFormat) {
+      const lDxa = computeLabourColWidthsMM(makeTimesMeasurer(), tables, columns, WORD_CONTENT_MM).map(w => mmToDxa(w));
       const labourHeaderRow = new TableRow({
         children: [
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 6, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 30, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: 10, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 8, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.labourCharges ?? "Only Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.labourAmount ?? "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.materialCharges ?? "Materials with Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 12, type: WidthType.PERCENTAGE } }),
-          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.materialAmount ?? "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: 11, type: WidthType.PERCENTAGE } })
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.sr, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: lDxa[0], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.particulars, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: lDxa[1], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.size, bold: true })] })], shading: { fill: "F0F0F0" }, width: { size: lDxa[2], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.quantity, bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: lDxa[3], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.labourCharges ?? "Only Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: lDxa[4], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.labourAmount ?? "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: lDxa[5], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.materialCharges ?? "Materials with Labour Charges", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: lDxa[6], type: WidthType.DXA } }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: columns.materialAmount ?? "Amount", bold: true })], alignment: AlignmentType.CENTER })], shading: { fill: "F0F0F0" }, width: { size: lDxa[7], type: WidthType.DXA } })
         ]
       });
 
@@ -2676,7 +2813,7 @@ export async function exportProfessionalWord(
         ]
       }));
 
-      children.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: WORD_TABLE_BORDERS }));
+      children.push(new Table({ rows: tableRows, width: { size: lDxa.reduce((a, b) => a + b, 0), type: WidthType.DXA }, columnWidths: lDxa, layout: TableLayoutType.FIXED, borders: WORD_TABLE_BORDERS }));
       return;
     }
 

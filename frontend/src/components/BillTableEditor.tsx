@@ -18,22 +18,45 @@ function recalcRowCells(
   applyInch: boolean
 ): Record<string, string> {
   const newCells = { ...cells };
-  const sizeCol = columns.find(c => c.label.toLowerCase().includes("size") || c.id === "size");
-  const qtyCol = columns.find(c => c.label.toLowerCase().includes("qty") || c.label.toLowerCase().includes("quantity") || c.id === "quantity");
-  const rateCol = columns.find(c => c.label.toLowerCase().includes("rate") || c.id === "rate");
-  const amtCol = columns.find(c => c.label.toLowerCase().includes("amount") || c.id === "amount");
+
+  // Find columns by label/id. When labels are renamed we fall back to positional
+  // heuristics so auto-calculation still works:
+  //   • "size" = first text col whose label/id hints at size, or 1st text col
+  //   • "qty"  = second number col (after Sr) by label match, or 2nd num col
+  //   • "rate" = third number col by label match, or 3rd num col
+  //   • "amt"  = last number col (most reliable regardless of label)
+  const numCols = columns.filter(c => c.kind === "number" && !isSrColumn(c));
+
+  const sizeCol = columns.find(c => c.label.toLowerCase().includes("size") || c.id === "size")
+    ?? columns.find(c => c.kind === "text" && !isSrColumn(c));
+
+  const qtyCol = columns.find(c => c.label.toLowerCase().includes("qty") || c.label.toLowerCase().includes("quantity") || c.id === "quantity")
+    ?? (numCols.length >= 1 ? numCols[0] : undefined);
+
+  const rateCol = columns.find(c => c.label.toLowerCase().includes("rate") || c.id === "rate")
+    ?? (numCols.length >= 2 ? numCols[numCols.length - 2] : undefined);
+
+  // Amount is always the LAST number column — most reliable regardless of what
+  // the user called it (Total, Price, Amt, etc.)
+  const amtCol = columns.find(c => c.label.toLowerCase().includes("amount") || c.id === "amount")
+    ?? (numCols.length >= 1 ? numCols[numCols.length - 1] : undefined);
+
+  // qty/rate/amt should all be distinct — if rate and qty point to the same col
+  // (e.g. only one number col besides amt), skip the auto-calc to avoid clobbering.
+  const distinct = qtyCol && rateCol && amtCol &&
+    qtyCol.id !== rateCol.id && qtyCol.id !== amtCol.id && rateCol.id !== amtCol.id;
 
   if (sizeCol && newCells[sizeCol.id]) {
     const parsedQty = parseSize(newCells[sizeCol.id], applyInch);
-    if (qtyCol) {
+    if (qtyCol && qtyCol.id !== amtCol?.id) {
       newCells[qtyCol.id] = String(parsedQty);
     }
   }
 
-  if (qtyCol && rateCol && amtCol) {
-    const q = parseFloat(newCells[qtyCol.id] || "0") || 0;
-    const r = parseFloat(newCells[rateCol.id] || "0") || 0;
-    newCells[amtCol.id] = String(Math.round(q * r * 100) / 100);
+  if (distinct) {
+    const q = parseFloat(newCells[qtyCol!.id] || "0") || 0;
+    const r = parseFloat(newCells[rateCol!.id] || "0") || 0;
+    newCells[amtCol!.id] = String(Math.round(q * r * 100) / 100);
   }
 
   return newCells;

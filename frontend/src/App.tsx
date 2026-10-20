@@ -258,7 +258,11 @@ export function App() {
   const sectionTotal = (section: BillSection) => {
     if (billFormat === "custom") {
       const table = sectionToBillTable(section, "custom");
-      const amountCol = table.columns.find(c => c.label.toLowerCase().includes('amount') || c.kind === 'number');
+      // Match findCustomAmountCol in PDF: prefer a column labelled/id "amount",
+      // fall back to the LAST number column (not first — avoids picking Qty/Rate).
+      const byLabel = table.columns.find(c => c.id === "amount" || c.label.toLowerCase().includes("amount"));
+      const numberCols = table.columns.filter(c => c.kind === "number" && c.id !== "sr" && !c.label.toLowerCase().includes("sr"));
+      const amountCol = byLabel ?? (numberCols.length > 0 ? numberCols[numberCols.length - 1] : null);
       if (!amountCol) return 0;
       return table.rows.reduce((sum, r) => sum + (parseFloat(r.cells[amountCol.id]) || 0), 0);
     }
