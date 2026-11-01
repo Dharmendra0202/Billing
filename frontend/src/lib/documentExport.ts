@@ -2129,12 +2129,42 @@ export async function exportProfessionalPDF(
   }
 
   // Signature
+  // Same layout as the live preview: a block flush with the right margin; the
+  // signature image is centred on the line with its bottom resting on it, and
+  // the name + "Authorised Signatory" are centred underneath. The space above
+  // the line is kept even without an image, so a printed bill can be signed.
   if (billDetails.showSignature) {
-    yPos = Math.max(yPos, 240); // Push signature to bottom
+    const name = (billDetails.proprietorName || "").trim();
+    const title = "Authorised Signatory";
     doc.setFont("times", "normal");
-    doc.text(`Proprietor: ${billDetails.proprietorName}`, pageWidth - margin - 60, yPos, { align: "center" });
-    yPos += 15;
-    doc.text("Authorised Signatory", pageWidth - margin - 60, yPos, { align: "center" });
+    doc.setFontSize(11);
+    const blockW = Math.max(50, doc.getTextWidth(name) + 6, doc.getTextWidth(title) + 6);
+    const cx = pageWidth - margin - blockW / 2;
+    const SIG_H = 18; // height available for the signature image (mm)
+    let top = Math.max(yPos + 4, 238); // push the block towards the page bottom
+    if (top + SIG_H + 12 > pageBottom + 2) { doc.addPage(); top = 20; }
+    const lineY = top + SIG_H;
+
+    if (billDetails.signatureImage) {
+      try {
+        const props = doc.getImageProperties(billDetails.signatureImage);
+        const ratio = Math.min((blockW - 4) / props.width, SIG_H / props.height);
+        const w = props.width * ratio;
+        const h = props.height * ratio;
+        doc.addImage(billDetails.signatureImage, props.fileType || "PNG", cx - w / 2, lineY + 1 - h, w, h, "signature", "FAST");
+      } catch (err) {
+        console.warn("Signature image could not be added to the PDF:", err);
+      }
+    }
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.3);
+    doc.line(cx - blockW / 2, lineY, cx + blockW / 2, lineY);
+    doc.setFont("times", "normal");
+    doc.setFontSize(11);
+    let textY = lineY + 5;
+    if (name) { doc.text(name, cx, textY, { align: "center" }); textY += 4.6; }
+    doc.text(title, cx, textY, { align: "center" });
+    yPos = textY;
   }
 
   // If editable bill data was provided, append it after the PDF so the file can
@@ -2500,7 +2530,7 @@ export async function exportProfessionalExcel(
   // Signature
   if (billDetails.showSignature) {
     addSpacer();
-    ws.addRow(["", "", "", "", "", `Proprietor: ${billDetails.proprietorName}`]);
+    ws.addRow(["", "", "", "", "", billDetails.proprietorName || ""]);
     ws.addRow(["", "", "", "", "", "Authorised Signatory"]);
   }
 
@@ -2949,7 +2979,7 @@ export async function exportProfessionalWord(
   if (billDetails.showSignature) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Proprietor: ${billDetails.proprietorName}`, size: 22 })],
+        children: [new TextRun({ text: billDetails.proprietorName || "", size: 22 })],
         alignment: AlignmentType.RIGHT,
         spacing: { before: 600 }
       })

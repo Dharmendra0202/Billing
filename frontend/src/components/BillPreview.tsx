@@ -513,9 +513,17 @@ export function BillPreview({ header, sections, billDetails, columnLabels, colum
       {/* Signature */}
       {billDetails.showSignature && (
         <div className="pbSignatureArea">
-          <div className="pbSignatureLine" />
-          <p>{billDetails.proprietorName}</p>
-          <p>Authorised Signatory</p>
+          <div className="pbSignatureBlock">
+            {/* Space for the signature (kept even without an image, for a hand signature). */}
+            <div className="pbSignatureImageBox">
+              {billDetails.signatureImage && (
+                <img className="pbSignatureImage" src={billDetails.signatureImage} alt="Signature" />
+              )}
+            </div>
+            <div className="pbSignatureLine" />
+            {billDetails.proprietorName && <p>{billDetails.proprietorName}</p>}
+            <p>Authorised Signatory</p>
+          </div>
         </div>
       )}
     </div>

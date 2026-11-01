@@ -103,6 +103,11 @@ export type BillDetails = {
   showHeader?: boolean;
   showDate?: boolean;
   proprietorName: string;
+  // Optional signature image, stored as a base64 data URL (e.g. "data:image/png;base64,...").
+  // When set, it is drawn centred on the signature line in the preview and exports.
+  signatureImage?: string;
+  // True once signatureImage has had its background made transparent.
+  signatureTransparent?: boolean;
 };
 
 

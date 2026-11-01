@@ -12,6 +12,7 @@ import { money, parseSize, toTitleCase, convertInchesToFeet, convertInchesToFeet
 import { exportProfessionalPDF, exportProfessionalExcel, exportProfessionalWord } from "./lib/documentExport";
 import { convertAllPointValues } from "./lib/inchConversion";
 import { encodeBillMarker, extractBillFromPdf } from "./lib/billFile";
+import { makeSignatureTransparent } from "./lib/signatureImage";
 import { defaultColumnLabels, defaultColumnVisibility } from "./types";
 import type { BillDetails, BillSection, BillTable, ColumnLabels, ColumnVisibility, EditorRow, HeaderTemplate, BillFormat, BillColumn, BillRow } from "./types";
 
@@ -193,6 +194,19 @@ export function App() {
   const updateColumnLabel = (key: keyof ColumnLabels, value: string) => {
     setColumnLabels(prev => ({ ...prev, [key]: value }));
   };
+
+  // A signature uploaded before background removal existed (or restored from an
+  // older PDF) still has its paper background — clean it up once, automatically.
+  useEffect(() => {
+    const sig = billDetails.signatureImage;
+    if (!sig || billDetails.signatureTransparent) return;
+    let cancelled = false;
+    makeSignatureTransparent(sig).catch(() => sig).then(clean => {
+      if (cancelled) return;
+      setBillDetails(prev => (prev.signatureImage === sig ? { ...prev, signatureImage: clean, signatureTransparent: true } : prev));
+    });
+    return () => { cancelled = true; };
+  }, [billDetails.signatureImage, billDetails.signatureTransparent]);
 
   // ── Autosave: persist every change so refresh never loses data ──────────────
   useEffect(() => { localStorage.setItem("bill.header", JSON.stringify(header)); }, [header]);
@@ -765,10 +779,57 @@ export function App() {
                 Show Signature section
               </label>
               {billDetails.showSignature && (
-                <label style={{ marginBottom: 0 }}>
-                  Proprietor Name
-                  <input value={billDetails.proprietorName} onChange={e => updateDetail("proprietorName", e.target.value)} placeholder="Proprietor Name" />
-                </label>
+                <>
+                  <label style={{ marginBottom: 8 }}>
+                    Proprietor Name
+                    <input value={billDetails.proprietorName} onChange={e => updateDetail("proprietorName", e.target.value)} placeholder="Proprietor Name" />
+                  </label>
+                  <label style={{ marginBottom: 0 }}>
+                    Signature Image (optional)
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        e.target.value = ""; // allow re-selecting the same file
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = async () => {
+                          // Remove the paper background so only the ink remains.
+                          try {
+                            const clean = await makeSignatureTransparent(String(reader.result));
+                            setBillDetails(prev => ({ ...prev, signatureImage: clean, signatureTransparent: true }));
+                          } catch {
+                            alert("This image couldn't be opened. Please upload the signature as a JPG or PNG photo.");
+                          }
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                      style={{ fontSize: 12 }}
+                    />
+                  </label>
+                  {billDetails.signatureImage && (
+                    <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10 }}>
+                      <img
+                        src={billDetails.signatureImage}
+                        alt="Signature"
+                        title="Checkered areas are transparent"
+                        style={{
+                          height: 40, maxWidth: 160, objectFit: "contain", border: "1px solid #e2e8f0", borderRadius: 4, padding: 2,
+                          background: "repeating-conic-gradient(#e2e8f0 0% 25%, #fff 0% 50%) 50% / 10px 10px"
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="textButton"
+                        onClick={() => setBillDetails(prev => ({ ...prev, signatureImage: undefined, signatureTransparent: undefined }))}
+                        style={{ fontSize: 12 }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
               <hr style={{ border: "none", borderTop: "1px solid #e2e8f0", margin: "10px 0" }} />
               <span className="cardTitle" style={{ fontSize: 12, marginBottom: 6, display: "block" }}>Totals Section</span>

@@ -871,8 +871,14 @@ input:focus, textarea:focus, select:focus {
 .pbRight { text-align: right; }
 .pbNote { font-size: 10px; margin: 16px 0 6px; }
 .pbNoteLabel { font-weight: bold; margin-bottom: 3px; }
-.pbSignatureArea { margin-top: 50px; text-align: right; font-size: 11px; }
-.pbSignatureLine { display: block; width: 140px; border-top: 1px solid #000; margin: 6px 0 4px auto; }
+/* Signature: a right-aligned block; image, line, name and title are all centred
+   on the line, and the signature image rests on the line like a real signature. */
+.pbSignatureArea { margin-top: 12px; display: flex; justify-content: flex-end; font-size: 11px; }
+.pbSignatureBlock { display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 150px; }
+.pbSignatureImageBox { width: 100%; height: 46px; display: flex; align-items: flex-end; justify-content: center; margin-bottom: -3px; position: relative; z-index: 1; }
+.pbSignatureImage { display: block; max-height: 46px; max-width: 100%; object-fit: contain; }
+.pbSignatureLine { display: block; width: 100%; border-top: 1px solid #000; margin: 0 0 4px; }
+.pbSignatureBlock p { margin: 0; line-height: 1.3; }
 
 /* ── Scanner modal (fullscreen) ─────────────────────────────────────────────── */
 .billScannerOverlay {
